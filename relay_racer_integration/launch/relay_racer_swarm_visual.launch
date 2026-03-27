@@ -1,0 +1,40 @@
+<launch>
+  <arg name="relay_policy_mode" default="rule"/>
+  <arg name="relay_max_occupancy_ratio" default="0.5"/>
+  <arg name="use_post_startup_service" default="false"/>
+  <arg name="config_file" default="$(find relay_racer_integration)/config/real_platform_racer_swarm.yaml"/>
+
+  <include file="$(find relay_racer_integration)/launch/relay_real_input_4planner_min.launch">
+    <arg name="config_file" value="$(arg config_file)"/>
+    <arg name="planner_drone_num" value="5"/>
+    <arg name="use_pcd_map" value="true"/>
+    <arg name="pcd_map_path" value="$(find map_generator)/resource/pillar.pcd"/>
+    <arg name="map_size_x" value="35.0"/>
+    <arg name="map_size_y" value="35.0"/>
+    <arg name="map_size_z" value="3.5"/>
+    <arg name="box_min_x" value="-7.0"/>
+    <arg name="box_min_y" value="-15.0"/>
+    <arg name="box_min_z" value="0.0"/>
+    <arg name="box_max_x" value="7.0"/>
+    <arg name="box_max_y" value="15.0"/>
+    <arg name="box_max_z" value="1.7"/>
+    <arg name="drone1_init_x" value="0.0"/>
+    <arg name="drone1_init_y" value="0.0"/>
+    <arg name="drone1_init_z" value="1.0"/>
+    <arg name="drone2_init_x" value="0.0"/>
+    <arg name="drone2_init_y" value="-1.0"/>
+    <arg name="drone2_init_z" value="1.0"/>
+    <arg name="drone3_init_x" value="1.0"/>
+    <arg name="drone3_init_y" value="-1.0"/>
+    <arg name="drone3_init_z" value="1.0"/>
+    <arg name="drone4_init_x" value="1.0"/>
+    <arg name="drone4_init_y" value="0.0"/>
+    <arg name="drone4_init_z" value="1.0"/>
+    <arg name="trigger_finish_deadline" value="70.0"/>
+    <arg name="trigger_failure_deadline" value="90.0"/>
+    <arg name="trigger_post_startup_service_enabled" value="$(arg use_post_startup_service)"/>
+    <arg name="trigger_service_agent_x_positions" value="0,0,1,1"/>
+    <arg name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+    <arg name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+  </include>
+</launch>

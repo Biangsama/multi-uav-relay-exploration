@@ -1,0 +1,35 @@
+syntax = "proto3";
+package dancers_update_proto;
+
+message NodeCommMetrics {
+  uint32 node_id = 1;
+
+  uint64 expected_pkts = 2;
+  uint64 rx_pkts = 3;
+  uint64 lost_pkts = 4;
+  double pdr = 5;
+
+  uint64 delay_mean_us = 6;
+  uint64 delay_max_us = 7;
+  uint64 jitter_mean_us = 8;
+
+  uint64 rx_bytes = 9;
+  double throughput_bps = 10;
+
+  uint64 tx_pkts = 11;
+  uint64 dup_pkts = 12;
+
+  double rx_power_dbm_mean = 13;
+  double rx_power_dbm_min = 14;
+  double rx_power_dbm_max = 15;
+}
+
+message CmdPayload {
+  uint64 seq = 1;
+  uint64 t_sample_us = 2;     // NET 侧用于标注“采样/窗口时间”
+  uint64 t_sim_us = 3;        // NET 侧 ns-3 当前时刻(us)
+  uint64 window_idx = 4;
+
+  bytes cmd_pose_vector = 5;  // 原来的 PoseVector(bytes)
+  repeated NodeCommMetrics node_metrics = 6; // 每个节点的通信指标
+}

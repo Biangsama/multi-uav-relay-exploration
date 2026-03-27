@@ -1,0 +1,35 @@
+<launch>
+  <arg name="monitor_report_path" default=""/>
+  <arg name="monitor_summary_period" default="5.0"/>
+  <arg name="monitor_metric_sample_period" default="0.5"/>
+  <arg name="monitor_pre_window_sec" default="5.0"/>
+  <arg name="monitor_post_window_sec" default="5.0"/>
+  <arg name="monitor_planning_agent_ids" default="1,2,3,4"/>
+  <arg name="monitor_require_pos_cmd" default="false"/>
+  <arg name="monitor_frontier_completion_threshold" default="10"/>
+  <arg name="monitor_frontier_topic" default="/planning_vis/frontier_1"/>
+  <arg name="monitor_swarm_comm_state_topic" default="/relay_integration/swarm_comm_state"/>
+  <arg name="monitor_task_metrics_topic" default="/relay_integration/task_metrics"/>
+  <arg name="monitor_output" default="log"/>
+
+  <include file="$(find exploration_manager)/launch/swarm_exploration.launch"/>
+
+  <node pkg="relay_racer_integration" type="relay_validation_monitor.py" name="relay_validation_monitor" output="$(arg monitor_output)">
+    <param name="agent_id" value="1"/>
+    <param name="relay_role_topic" value="/relay_integration/relay_role_cmd"/>
+    <param name="planning_new_topic" value="/planning/new_1"/>
+    <param name="planning_bspline_topic" value="/planning/bspline_1"/>
+    <param name="planning_pos_cmd_topic" value="/planning/pos_cmd_1"/>
+    <param name="frontier_topic" value="$(arg monitor_frontier_topic)"/>
+    <param name="swarm_comm_state_topic" value="$(arg monitor_swarm_comm_state_topic)"/>
+    <param name="task_metrics_topic" value="$(arg monitor_task_metrics_topic)"/>
+    <param name="report_path" value="$(arg monitor_report_path)"/>
+    <param name="summary_period" value="$(arg monitor_summary_period)"/>
+    <param name="metric_sample_period" value="$(arg monitor_metric_sample_period)"/>
+    <param name="pre_window_sec" value="$(arg monitor_pre_window_sec)"/>
+    <param name="post_window_sec" value="$(arg monitor_post_window_sec)"/>
+    <param name="planning_agent_ids" value="$(arg monitor_planning_agent_ids)"/>
+    <param name="require_pos_cmd" value="$(arg monitor_require_pos_cmd)"/>
+    <param name="frontier_completion_threshold" value="$(arg monitor_frontier_completion_threshold)"/>
+  </node>
+</launch>

@@ -1,0 +1,69 @@
+use_sim_time: true
+id_offset: -1
+
+relay_trigger_age_threshold: 0.5
+relay_link_exit_age_threshold: 0.8
+relay_trigger_persist_time: 1.5
+relay_winner_persist_time: 2.0
+relay_recover_time: 2.0
+relay_min_hold_time: 8.0
+relay_reenter_cooldown: 4.0
+relay_startup_grace_period: 25.0
+relay_policy_mode: rule
+relay_max_occupancy_ratio: 0.5
+relay_no_improvement_timeout: 15.0
+relay_max_active_duration: 30.0
+relay_activation_min_stale_count: 1
+relay_activation_score_margin: 0.0
+relay_activation_min_votes: 2
+relay_handoff_persist_time: 6.0
+relay_handoff_min_vote_margin: 1
+relay_failed_agent_cooldown: 20.0
+relay_endgame_completion_ratio_threshold: 0.99
+relay_endgame_frontier_cell_threshold: 1200
+relay_endgame_frontier_cluster_threshold: 3
+relay_endgame_active_grid_threshold: 4
+relay_candidate_speed_penalty_gain: 6.0
+relay_candidate_reuse_penalty_gain: 0.15
+relay_candidate_grid_load_penalty_gain: 4.0
+relay_candidate_small_component_penalty_gain: 12.0
+relay_candidate_backtrack_penalty_gain: 8.0
+relay_candidate_recent_safety_penalty_gain: 25.0
+relay_candidate_recent_safety_timeout_sec: 8.0
+relay_candidate_recent_plan_fail_penalty_gain: 18.0
+relay_candidate_recent_plan_fail_timeout_sec: 8.0
+relay_candidate_recent_plan_success_penalty_gain: 22.0
+relay_candidate_recent_plan_success_timeout_sec: 10.0
+relay_candidate_consecutive_plan_fail_penalty_gain: 4.0
+relay_suppress_balanced_split: true
+relay_balanced_min_component_size: 2
+relay_balanced_size_ratio_threshold: 0.75
+relay_balanced_min_separation_m: 10.0
+relay_balanced_axis_ratio_threshold: 1.8
+relay_balanced_outward_velocity_threshold: 0.15
+relay_anchor_use_nearest_pair_midpoint: true
+relay_frontier_improvement_min_delta: 200
+relay_frontier_regression_grace_sec: 5.0
+relay_frontier_regression_abs_threshold: 800
+relay_frontier_regression_ratio_threshold: 1.10
+
+relay_target_use_fixed_z: true
+relay_target_fixed_z: 1.0
+relay_target_min_z: 0.9
+relay_target_max_z: 1.3
+relay_target_obstacle_clearance: 0.6
+
+raw_comm_topic: /comm/rx_events_bytes
+relay_role_topic: /relay_integration/relay_role_cmd
+swarm_comm_state_topic: /relay_integration/swarm_comm_state
+task_metrics_topic: /relay_integration/task_metrics
+service_name: get_agents_velocities
+
+drone_ids: [1, 2, 3, 4]
+fail_open_routing: true
+
+peer_state_fresh_timeout_sec: 2.0
+peer_state_stale_retention_sec: 20.0
+proposal_timeout_sec: 3.0
+task_state_fresh_timeout_sec: 2.0
+control_period_sec: 0.5

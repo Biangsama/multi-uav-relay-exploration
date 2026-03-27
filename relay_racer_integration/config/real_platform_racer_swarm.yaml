@@ -1,0 +1,68 @@
+comm_enable: true
+comm_out_topic: /comm/rx_events_bytes
+comm_processing_delay_us: 0
+comm_ttl_us: 5000000
+control_period_us: 100000
+display_network_edges: true
+enable_metrics: false
+error_rate_model: ns3::NistErrorRateModel
+experiment_name: relay_racer_swarm_visual
+flocking_flow:
+  flow_id: 2
+  interval: 100000
+  packet_size: 0
+  port: 4000
+  timeout: 500000
+flush_every_n: 20
+frequency: 5000000000.0
+initial_heading: 0.0
+initial_spacing: 1.0
+initial_x: 0.0
+initial_y: 0.0
+initial_z: 1.0
+initial_positions:
+  - {x: 0.0, y: 0.0, z: 1.0, heading: 0.0}
+  - {x: 0.0, y: -1.0, z: 1.0, heading: 0.0}
+  - {x: 1.0, y: -1.0, z: 1.0, heading: 0.0}
+  - {x: 1.0, y: 0.0, z: 1.0, heading: 0.0}
+log_payload_bytes: false
+log_rtt: false
+log_service_timing: false
+metrics_dir: logs
+net_enable_metrics: false
+net_ip_server_address: 127.0.0.1
+net_ip_server_port: 10000
+net_log_per_packet: false
+net_metrics_dir: logs
+net_metrics_flush_every_n: 20
+net_metrics_mode: per_link
+net_step_size: 100000
+net_uds_server_address: /tmp/relay_racer_swarm_visual_net.sock
+net_use_uds: true
+phy_inject_delay_enable: false
+phy_inject_delay_fallback_us: 0
+phy_inject_delay_max_us: 2000000
+phy_inject_delay_min_us: 0
+phy_inject_delay_scale: 1.0
+phy_inject_queue_max_len: 8
+phy_ip_server_address: 127.0.0.1
+phy_ip_server_port: 10000
+phy_step_size: 10000
+phy_uds_server_address: /tmp/relay_racer_swarm_visual_phy.sock
+phy_use_uds: true
+phy_use_vat_service_cmd: false
+phy_vat_service_name: /get_agents_velocities
+phy_vat_timeout_ms: 200
+real_time_factor: 5.0
+request_commands_period: 100000
+results_folder: /home/zby/relay_explore_ws/logs/relay_racer_swarm_visual
+robots_number: 4
+ros_log_level: info
+save_compute_time: false
+seed: 42
+short_guard_interval_supported: false
+simulation_length: 80
+sync_window: 100000
+verbose: true
+wifi_phy_mode: HeMcs4
+wifi_standard: 802.11ax

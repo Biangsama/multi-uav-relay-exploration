@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>relay_racer_integration</name>
+  <version>0.0.0</version>
+  <description>Minimal integration layer between RACER and the cross-domain communication platform.</description>
+
+  <maintainer email="zby@example.com">zby</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_depend>connector_core</build_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>topic_tools</build_depend>
+  <build_depend>dancers_msgs</build_depend>
+  <build_depend>protobuf_msgs</build_depend>
+  <build_depend>protobuf</build_depend>
+
+  <build_export_depend>connector_core</build_export_depend>
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+  <build_export_depend>topic_tools</build_export_depend>
+  <build_export_depend>dancers_msgs</build_export_depend>
+  <build_export_depend>protobuf_msgs</build_export_depend>
+  <build_export_depend>protobuf</build_export_depend>
+
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>connector_core</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>bspline</exec_depend>
+  <exec_depend>quadrotor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>dancers_msgs</exec_depend>
+  <exec_depend>protobuf_msgs</exec_depend>
+  <exec_depend>protobuf</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>rviz</exec_depend>
+</package>

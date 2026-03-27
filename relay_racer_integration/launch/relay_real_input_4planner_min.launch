@@ -1,0 +1,550 @@
+<launch>
+  <arg name="config_file" default="$(find relay_racer_integration)/config/real_platform_min.yaml"/>
+  <arg name="planner_drone_num" default="5"/>
+  <arg name="planner_sensor_gate" default="true"/>
+  <arg name="use_local_topic_router" default="false"/>
+  <arg name="planner_sensor_gate_stable_pairs" default="5"/>
+  <arg name="planner_sensor_gate_sync_tolerance_sec" default="0.02"/>
+  <arg name="planner_sensor_gate_log_dir" default="/tmp/planner_sensor_gates"/>
+  <arg name="use_pcd_map" default="true"/>
+  <arg name="pcd_map_path" default="$(find map_generator)/resource/pillar_1x2.pcd"/>
+  <arg name="map_size_x" default="35.0"/>
+  <arg name="map_size_y" default="60.0"/>
+  <arg name="map_size_z" default="3.5"/>
+  <arg name="trigger_required" default="false"/>
+  <arg name="planner_auto_start" default="$(eval 'false' if arg('trigger_required') == 'true' else 'true')"/>
+  <arg name="trigger_wait_for_relay_cmd" default="false"/>
+  <arg name="trigger_call_test_service" default="false"/>
+  <arg name="trigger_shutdown_on_finish" default="false"/>
+  <arg name="trigger_finish_deadline" default="45.0"/>
+  <arg name="trigger_goal_deadline" default="14.0"/>
+  <arg name="trigger_require_planner_ready" default="true"/>
+  <arg name="trigger_planner_ready_min_messages" default="4"/>
+  <arg name="trigger_planner_ready_hold_sec" default="3.0"/>
+  <arg name="trigger_failure_deadline" default="55.0"/>
+  <arg name="trigger_goal_republish_period" default="1.0"/>
+  <arg name="trigger_republish_without_relay" default="true"/>
+  <arg name="trigger_post_startup_service_enabled" default="false"/>
+  <arg name="trigger_post_startup_service_require_goal" default="true"/>
+  <arg name="trigger_post_startup_service_require_planning_artifact" default="true"/>
+  <arg name="trigger_post_startup_service_delay_sec" default="3.0"/>
+  <arg name="trigger_post_startup_service_repeat_count" default="3"/>
+  <arg name="trigger_post_startup_service_repeat_period_sec" default="0.6"/>
+  <arg name="trigger_planning_artifact_agent_ids" default="1,2,3,4"/>
+  <arg name="trigger_planning_artifact_min_messages" default="1"/>
+  <arg name="trigger_service_agent_x_positions" default="0,0,1,1"/>
+  <arg name="trigger_service_edges" default="0-1,1-2"/>
+  <arg name="relay_policy_mode" default="rule"/>
+  <arg name="relay_max_occupancy_ratio" default="0.5"/>
+  <arg name="distributed_local_relay_controller" default="true"/>
+  <arg name="platform_output" default="log"/>
+  <arg name="comm_output" default="screen"/>
+  <arg name="monitor_report_path" default=""/>
+  <arg name="monitor_summary_period" default="5.0"/>
+  <arg name="monitor_metric_sample_period" default="0.5"/>
+  <arg name="monitor_pre_window_sec" default="5.0"/>
+  <arg name="monitor_post_window_sec" default="5.0"/>
+  <arg name="monitor_planning_agent_ids" default="1,2,3,4"/>
+  <arg name="monitor_require_pos_cmd" default="false"/>
+  <arg name="monitor_frontier_completion_threshold" default="10"/>
+  <arg name="monitor_frontier_topic" default="/planning_vis/frontier_1"/>
+  <arg name="monitor_swarm_comm_state_topic" default="/relay_integration/swarm_comm_state"/>
+  <arg name="monitor_task_metrics_topic" default="/relay_integration/task_metrics"/>
+  <arg name="box_min_x" default="-7.0"/>
+  <arg name="box_min_y" default="-28.0"/>
+  <arg name="box_min_z" default="0.0"/>
+  <arg name="box_max_x" default="7.0"/>
+  <arg name="box_max_y" default="28.0"/>
+  <arg name="box_max_z" default="1.7"/>
+
+  <arg name="drone1_init_x" default="0.0"/>
+  <arg name="drone1_init_y" default="0.0"/>
+  <arg name="drone1_init_z" default="1.0"/>
+  <arg name="drone2_init_x" default="0.0"/>
+  <arg name="drone2_init_y" default="-1.0"/>
+  <arg name="drone2_init_z" default="1.0"/>
+  <arg name="drone3_init_x" default="1.0"/>
+  <arg name="drone3_init_y" default="-1.0"/>
+  <arg name="drone3_init_z" default="1.0"/>
+  <arg name="drone4_init_x" default="1.0"/>
+  <arg name="drone4_init_y" default="0.0"/>
+  <arg name="drone4_init_z" default="1.0"/>
+
+  <param name="/use_sim_time" value="true"/>
+
+  <node if="$(arg planner_sensor_gate)" pkg="relay_racer_integration" type="planner_sensor_gate.py" name="planner_sensor_gate_1" output="$(arg platform_output)">
+    <param name="agent_id" value="1"/>
+    <param name="raw_odom_topic" value="/relay_odom_1"/>
+    <param name="raw_pose_topic" value="/pcl_render_node/sensor_pose_1"/>
+    <param name="raw_depth_topic" value="/pcl_render_node/depth_1"/>
+    <param name="gated_pose_topic" value="/relay_gate/planner1/sensor_pose"/>
+    <param name="gated_depth_topic" value="/relay_gate/planner1/depth"/>
+    <param name="stable_pair_count" value="$(arg planner_sensor_gate_stable_pairs)"/>
+    <param name="sync_tolerance_sec" value="$(arg planner_sensor_gate_sync_tolerance_sec)"/>
+    <param name="log_path" value="$(arg planner_sensor_gate_log_dir)/planner_sensor_gate_1.env"/>
+  </node>
+
+  <node if="$(arg planner_sensor_gate)" pkg="relay_racer_integration" type="planner_sensor_gate.py" name="planner_sensor_gate_2" output="$(arg platform_output)">
+    <param name="agent_id" value="2"/>
+    <param name="raw_odom_topic" value="/relay_odom_2"/>
+    <param name="raw_pose_topic" value="/pcl_render_node/sensor_pose_2"/>
+    <param name="raw_depth_topic" value="/pcl_render_node/depth_2"/>
+    <param name="gated_pose_topic" value="/relay_gate/planner2/sensor_pose"/>
+    <param name="gated_depth_topic" value="/relay_gate/planner2/depth"/>
+    <param name="stable_pair_count" value="$(arg planner_sensor_gate_stable_pairs)"/>
+    <param name="sync_tolerance_sec" value="$(arg planner_sensor_gate_sync_tolerance_sec)"/>
+    <param name="log_path" value="$(arg planner_sensor_gate_log_dir)/planner_sensor_gate_2.env"/>
+  </node>
+
+  <node if="$(arg planner_sensor_gate)" pkg="relay_racer_integration" type="planner_sensor_gate.py" name="planner_sensor_gate_3" output="$(arg platform_output)">
+    <param name="agent_id" value="3"/>
+    <param name="raw_odom_topic" value="/relay_odom_3"/>
+    <param name="raw_pose_topic" value="/pcl_render_node/sensor_pose_3"/>
+    <param name="raw_depth_topic" value="/pcl_render_node/depth_3"/>
+    <param name="gated_pose_topic" value="/relay_gate/planner3/sensor_pose"/>
+    <param name="gated_depth_topic" value="/relay_gate/planner3/depth"/>
+    <param name="stable_pair_count" value="$(arg planner_sensor_gate_stable_pairs)"/>
+    <param name="sync_tolerance_sec" value="$(arg planner_sensor_gate_sync_tolerance_sec)"/>
+    <param name="log_path" value="$(arg planner_sensor_gate_log_dir)/planner_sensor_gate_3.env"/>
+  </node>
+
+  <node if="$(arg planner_sensor_gate)" pkg="relay_racer_integration" type="planner_sensor_gate.py" name="planner_sensor_gate_4" output="$(arg platform_output)">
+    <param name="agent_id" value="4"/>
+    <param name="raw_odom_topic" value="/relay_odom_4"/>
+    <param name="raw_pose_topic" value="/pcl_render_node/sensor_pose_4"/>
+    <param name="raw_depth_topic" value="/pcl_render_node/depth_4"/>
+    <param name="gated_pose_topic" value="/relay_gate/planner4/sensor_pose"/>
+    <param name="gated_depth_topic" value="/relay_gate/planner4/depth"/>
+    <param name="stable_pair_count" value="$(arg planner_sensor_gate_stable_pairs)"/>
+    <param name="sync_tolerance_sec" value="$(arg planner_sensor_gate_sync_tolerance_sec)"/>
+    <param name="log_path" value="$(arg planner_sensor_gate_log_dir)/planner_sensor_gate_4.env"/>
+  </node>
+
+  <node pkg="relay_racer_integration"
+        type="racer_real_odom_bridge.py"
+        name="racer_real_odom_bridge"
+        output="$(arg platform_output)">
+    <param name="racer_ids" value="1,2,3,4"/>
+    <param name="id_offset" value="-1"/>
+    <param name="frame_id" value="map"/>
+    <param name="odom_topic_prefix" value="/relay_odom_"/>
+    <param name="agent_pose_topic" value="/agent_poses"/>
+    <param name="id_marker_topic" value="/id_markers"/>
+    <param name="agent_states_topic" value="/relay_integration/platform_agent_structs"/>
+  </node>
+
+  <node pkg="coordinator" type="coordinator" name="coordinator" output="$(arg platform_output)">
+    <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
+    <param name="config_file" value="$(arg config_file)"/>
+  </node>
+
+  <node pkg="relay_racer_integration" type="racer_real_phy_bridge_node" name="racer_real_phy_bridge" output="$(arg platform_output)">
+    <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
+    <param name="config_file" value="$(arg config_file)"/>
+    <param name="agent_states_topic" value="/relay_integration/platform_agent_structs"/>
+    <param name="real_states_stale_warn_sec" value="1.0"/>
+  </node>
+
+  <node pkg="ns3_connector" type="basic_wifi_adhoc_with_controller" name="basic_wifi_adhoc_with_controller" output="$(arg platform_output)">
+    <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
+    <param name="config_file" value="$(arg config_file)"/>
+    <param name="prefer_real_agent_states" value="true"/>
+    <param name="real_agent_states_topic" value="/relay_integration/platform_agent_structs"/>
+    <param name="real_agent_states_timeout_sec" value="1.0"/>
+    <param name="enable_swarm_msg_transport" value="true"/>
+    <param name="swarm_msg_id_offset" value="-1"/>
+    <param name="swarm_msg_tx_topic" value="/relay_integration/racer_swarm_tx_bytes"/>
+    <param name="swarm_msg_rx_topic" value="/relay_integration/racer_swarm_rx_bytes"/>
+  </node>
+
+  <node pkg="relay_racer_integration" type="racer_msg_tx_bridge_node" name="racer_msg_tx_bridge" output="$(arg platform_output)">
+    <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    <param name="tx_topic" value="/relay_integration/racer_swarm_tx_bytes"/>
+  </node>
+
+  <node pkg="relay_racer_integration" type="racer_msg_rx_bridge_node" name="racer_msg_rx_bridge" output="$(arg platform_output)">
+    <param name="rx_topic" value="/relay_integration/racer_swarm_rx_bytes"/>
+  </node>
+
+  <node pkg="relay_racer_integration" type="racer_msg_relay_forwarder_node" name="racer_msg_relay_forwarder" output="$(arg comm_output)">
+    <param name="rx_topic" value="/relay_integration/racer_swarm_rx_bytes"/>
+    <param name="tx_topic" value="/relay_integration/racer_swarm_tx_bytes"/>
+    <param name="relay_role_topic" value="/relay_integration/relay_role_cmd"/>
+  </node>
+
+  <group if="$(arg distributed_local_relay_controller)">
+    <node pkg="relay_racer_integration" type="racer_comm_controller_node" name="racer_comm_controller_compat" output="$(arg platform_output)">
+      <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+      <param name="id_offset" value="-1"/>
+      <param name="prefer_service_input" value="true"/>
+      <param name="service_input_timeout_sec" value="1.0"/>
+      <param name="service_input_replaces_graph" value="true"/>
+      <param name="relay_policy_mode" value="off"/>
+      <param name="publish_relay_role_cmds" value="false"/>
+      <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+      <param name="drone_num" value="$(arg planner_drone_num)"/>
+      <param name="first_drone_id" value="1"/>
+      <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    </node>
+
+    <node pkg="relay_racer_integration" type="racer_local_relay_controller_node" name="racer_local_relay_controller_1" output="$(arg comm_output)">
+      <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+      <param name="self_id" value="1"/>
+      <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+      <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+      <param name="drone_num" value="$(arg planner_drone_num)"/>
+      <param name="first_drone_id" value="1"/>
+      <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    </node>
+    <node pkg="relay_racer_integration" type="racer_local_relay_controller_node" name="racer_local_relay_controller_2" output="$(arg comm_output)">
+      <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+      <param name="self_id" value="2"/>
+      <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+      <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+      <param name="drone_num" value="$(arg planner_drone_num)"/>
+      <param name="first_drone_id" value="1"/>
+      <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    </node>
+    <node pkg="relay_racer_integration" type="racer_local_relay_controller_node" name="racer_local_relay_controller_3" output="$(arg comm_output)">
+      <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+      <param name="self_id" value="3"/>
+      <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+      <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+      <param name="drone_num" value="$(arg planner_drone_num)"/>
+      <param name="first_drone_id" value="1"/>
+      <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    </node>
+    <node pkg="relay_racer_integration" type="racer_local_relay_controller_node" name="racer_local_relay_controller_4" output="$(arg comm_output)">
+      <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+      <param name="self_id" value="4"/>
+      <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+      <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+      <param name="drone_num" value="$(arg planner_drone_num)"/>
+      <param name="first_drone_id" value="1"/>
+      <rosparam param="drone_ids">[1, 2, 3, 4]</rosparam>
+    </node>
+  </group>
+
+  <node unless="$(arg distributed_local_relay_controller)" pkg="relay_racer_integration" type="racer_comm_controller_node" name="racer_comm_controller" output="$(arg comm_output)">
+    <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+    <param name="id_offset" value="-1"/>
+    <param name="prefer_service_input" value="true"/>
+    <param name="service_input_timeout_sec" value="1.0"/>
+    <param name="service_input_replaces_graph" value="true"/>
+    <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+    <param name="relay_max_occupancy_ratio" value="$(arg relay_max_occupancy_ratio)"/>
+  </node>
+
+  <node if="$(arg use_local_topic_router)" pkg="relay_racer_integration" type="racer_topic_router_node" name="racer_topic_router" output="$(arg platform_output)">
+    <param name="drone_num" value="$(arg planner_drone_num)"/>
+    <param name="first_drone_id" value="1"/>
+    <param name="swarm_comm_state_topic" value="$(arg monitor_swarm_comm_state_topic)"/>
+  </node>
+
+  <node if="$(arg use_pcd_map)" pkg="map_generator" name="map_pub" type="map_pub" output="$(arg platform_output)"
+        args="$(arg pcd_map_path)"/>
+
+  <node unless="$(arg use_pcd_map)" pkg="map_generator" name="random_forest" type="random_forest" output="$(arg platform_output)">
+    <remap from="~odometry" to="empty"/>
+    <param name="init_state_x" value="$(arg drone1_init_x)"/>
+    <param name="init_state_y" value="$(arg drone1_init_y)"/>
+    <param name="map/x_size" value="$(arg map_size_x)"/>
+    <param name="map/y_size" value="$(arg map_size_y)"/>
+    <param name="map/z_size" value="$(arg map_size_z)"/>
+    <param name="map/resolution" value="0.1"/>
+    <param name="ObstacleShape/seed" value="1"/>
+    <param name="map/obs_num" value="0"/>
+    <param name="map/circle_num" value="0"/>
+    <param name="ObstacleShape/lower_rad" value="0.5"/>
+    <param name="ObstacleShape/upper_rad" value="0.8"/>
+    <param name="ObstacleShape/lower_hei" value="0.0"/>
+    <param name="ObstacleShape/upper_hei" value="3.0"/>
+    <param name="ObstacleShape/radius_l" value="0.7"/>
+    <param name="ObstacleShape/radius_h" value="0.8"/>
+    <param name="ObstacleShape/z_l" value="0.7"/>
+    <param name="ObstacleShape/z_h" value="0.8"/>
+    <param name="ObstacleShape/theta" value="0.5"/>
+    <param name="sensing/radius" value="5.0"/>
+    <param name="sensing/rate" value="10.0"/>
+  </node>
+
+  <group ns="relay_4planner">
+    <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="drone_id" value="1"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="odometry_topic" value="/relay_odom_1"/>
+      <arg name="sensor_pose_topic" value="$(eval '/relay_gate/planner1/sensor_pose' if arg('planner_sensor_gate') else '/pcl_render_node/sensor_pose_1')"/>
+      <arg name="depth_topic" value="$(eval '/relay_gate/planner1/depth' if arg('planner_sensor_gate') else '/pcl_render_node/depth_1')"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud_1"/>
+      <arg name="cx" value="324.0879821777344"/>
+      <arg name="cy" value="239.10362243652344"/>
+      <arg name="fx" value="385.69793701171875"/>
+      <arg name="fy" value="385.69793701171875"/>
+      <arg name="max_vel" value="1.0"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="simulation" value="true"/>
+      <arg name="single_expo" value="false"/>
+      <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="box_min_x" value="$(arg box_min_x)"/>
+      <arg name="box_min_y" value="$(arg box_min_y)"/>
+      <arg name="box_min_z" value="$(arg box_min_z)"/>
+      <arg name="box_max_x" value="$(arg box_max_x)"/>
+      <arg name="box_max_y" value="$(arg box_max_y)"/>
+      <arg name="box_max_z" value="$(arg box_max_z)"/>
+    </include>
+    <node pkg="plan_manage" name="traj_server_1" type="traj_server" output="screen">
+      <remap from="/odom_world" to="/relay_odom_1"/>
+      <remap from="planning/bspline" to="/planning/bspline_1"/>
+      <remap from="planning/replan" to="/planning/replan_1"/>
+      <remap from="planning/new" to="/planning/new_1"/>
+      <remap from="/position_cmd" to="/planning/pos_cmd_1"/>
+      <remap from="planning/position_cmd_vis" to="/planning/position_cmd_vis_1"/>
+      <remap from="planning/travel_traj" to="/planning/travel_traj_1"/>
+      <param name="traj_server/time_forward" value="1.5" type="double"/>
+      <param name="traj_server/pub_traj_id" value="4" type="int"/>
+      <param name="traj_server/drone_id" value="1" type="int"/>
+      <param name="traj_server/drone_num" value="$(arg planner_drone_num)" type="int"/>
+      <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+      <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+      <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+      <param name="perception_utils/max_dist" value="4.5" type="double"/>
+      <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+    <include file="$(find exploration_manager)/launch/simulator_light.xml">
+      <arg name="drone_id" value="1"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="init_x" value="$(arg drone1_init_x)"/>
+      <arg name="init_y" value="$(arg drone1_init_y)"/>
+      <arg name="init_z" value="$(arg drone1_init_z)"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="/relay_odom_1"/>
+    </include>
+
+    <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="drone_id" value="2"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="odometry_topic" value="/relay_odom_2"/>
+      <arg name="sensor_pose_topic" value="$(eval '/relay_gate/planner2/sensor_pose' if arg('planner_sensor_gate') else '/pcl_render_node/sensor_pose_2')"/>
+      <arg name="depth_topic" value="$(eval '/relay_gate/planner2/depth' if arg('planner_sensor_gate') else '/pcl_render_node/depth_2')"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud_2"/>
+      <arg name="cx" value="324.0879821777344"/>
+      <arg name="cy" value="239.10362243652344"/>
+      <arg name="fx" value="385.69793701171875"/>
+      <arg name="fy" value="385.69793701171875"/>
+      <arg name="max_vel" value="1.0"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="simulation" value="true"/>
+      <arg name="single_expo" value="false"/>
+      <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="box_min_x" value="$(arg box_min_x)"/>
+      <arg name="box_min_y" value="$(arg box_min_y)"/>
+      <arg name="box_min_z" value="$(arg box_min_z)"/>
+      <arg name="box_max_x" value="$(arg box_max_x)"/>
+      <arg name="box_max_y" value="$(arg box_max_y)"/>
+      <arg name="box_max_z" value="$(arg box_max_z)"/>
+    </include>
+    <node pkg="plan_manage" name="traj_server_2" type="traj_server" output="screen">
+      <remap from="/odom_world" to="/relay_odom_2"/>
+      <remap from="planning/bspline" to="/planning/bspline_2"/>
+      <remap from="planning/replan" to="/planning/replan_2"/>
+      <remap from="planning/new" to="/planning/new_2"/>
+      <remap from="/position_cmd" to="/planning/pos_cmd_2"/>
+      <remap from="planning/position_cmd_vis" to="/planning/position_cmd_vis_2"/>
+      <remap from="planning/travel_traj" to="/planning/travel_traj_2"/>
+      <param name="traj_server/time_forward" value="1.5" type="double"/>
+      <param name="traj_server/pub_traj_id" value="4" type="int"/>
+      <param name="traj_server/drone_id" value="2" type="int"/>
+      <param name="traj_server/drone_num" value="$(arg planner_drone_num)" type="int"/>
+      <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+      <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+      <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+      <param name="perception_utils/max_dist" value="4.5" type="double"/>
+      <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+    <include file="$(find exploration_manager)/launch/simulator_light.xml">
+      <arg name="drone_id" value="2"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="init_x" value="$(arg drone2_init_x)"/>
+      <arg name="init_y" value="$(arg drone2_init_y)"/>
+      <arg name="init_z" value="$(arg drone2_init_z)"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="/relay_odom_2"/>
+    </include>
+
+    <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="drone_id" value="3"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="odometry_topic" value="/relay_odom_3"/>
+      <arg name="sensor_pose_topic" value="$(eval '/relay_gate/planner3/sensor_pose' if arg('planner_sensor_gate') else '/pcl_render_node/sensor_pose_3')"/>
+      <arg name="depth_topic" value="$(eval '/relay_gate/planner3/depth' if arg('planner_sensor_gate') else '/pcl_render_node/depth_3')"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud_3"/>
+      <arg name="cx" value="324.0879821777344"/>
+      <arg name="cy" value="239.10362243652344"/>
+      <arg name="fx" value="385.69793701171875"/>
+      <arg name="fy" value="385.69793701171875"/>
+      <arg name="max_vel" value="1.0"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="simulation" value="true"/>
+      <arg name="single_expo" value="false"/>
+      <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="box_min_x" value="$(arg box_min_x)"/>
+      <arg name="box_min_y" value="$(arg box_min_y)"/>
+      <arg name="box_min_z" value="$(arg box_min_z)"/>
+      <arg name="box_max_x" value="$(arg box_max_x)"/>
+      <arg name="box_max_y" value="$(arg box_max_y)"/>
+      <arg name="box_max_z" value="$(arg box_max_z)"/>
+    </include>
+    <node pkg="plan_manage" name="traj_server_3" type="traj_server" output="screen">
+      <remap from="/odom_world" to="/relay_odom_3"/>
+      <remap from="planning/bspline" to="/planning/bspline_3"/>
+      <remap from="planning/replan" to="/planning/replan_3"/>
+      <remap from="planning/new" to="/planning/new_3"/>
+      <remap from="/position_cmd" to="/planning/pos_cmd_3"/>
+      <remap from="planning/position_cmd_vis" to="/planning/position_cmd_vis_3"/>
+      <remap from="planning/travel_traj" to="/planning/travel_traj_3"/>
+      <param name="traj_server/time_forward" value="1.5" type="double"/>
+      <param name="traj_server/pub_traj_id" value="4" type="int"/>
+      <param name="traj_server/drone_id" value="3" type="int"/>
+      <param name="traj_server/drone_num" value="$(arg planner_drone_num)" type="int"/>
+      <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+      <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+      <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+      <param name="perception_utils/max_dist" value="4.5" type="double"/>
+      <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+    <include file="$(find exploration_manager)/launch/simulator_light.xml">
+      <arg name="drone_id" value="3"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="init_x" value="$(arg drone3_init_x)"/>
+      <arg name="init_y" value="$(arg drone3_init_y)"/>
+      <arg name="init_z" value="$(arg drone3_init_z)"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="/relay_odom_3"/>
+    </include>
+
+    <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="drone_id" value="4"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="odometry_topic" value="/relay_odom_4"/>
+      <arg name="sensor_pose_topic" value="$(eval '/relay_gate/planner4/sensor_pose' if arg('planner_sensor_gate') else '/pcl_render_node/sensor_pose_4')"/>
+      <arg name="depth_topic" value="$(eval '/relay_gate/planner4/depth' if arg('planner_sensor_gate') else '/pcl_render_node/depth_4')"/>
+      <arg name="cloud_topic" value="/pcl_render_node/cloud_4"/>
+      <arg name="cx" value="324.0879821777344"/>
+      <arg name="cy" value="239.10362243652344"/>
+      <arg name="fx" value="385.69793701171875"/>
+      <arg name="fy" value="385.69793701171875"/>
+      <arg name="max_vel" value="1.0"/>
+      <arg name="max_acc" value="1.0"/>
+      <arg name="simulation" value="true"/>
+      <arg name="single_expo" value="false"/>
+      <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="box_min_x" value="$(arg box_min_x)"/>
+      <arg name="box_min_y" value="$(arg box_min_y)"/>
+      <arg name="box_min_z" value="$(arg box_min_z)"/>
+      <arg name="box_max_x" value="$(arg box_max_x)"/>
+      <arg name="box_max_y" value="$(arg box_max_y)"/>
+      <arg name="box_max_z" value="$(arg box_max_z)"/>
+    </include>
+    <node pkg="plan_manage" name="traj_server_4" type="traj_server" output="screen">
+      <remap from="/odom_world" to="/relay_odom_4"/>
+      <remap from="planning/bspline" to="/planning/bspline_4"/>
+      <remap from="planning/replan" to="/planning/replan_4"/>
+      <remap from="planning/new" to="/planning/new_4"/>
+      <remap from="/position_cmd" to="/planning/pos_cmd_4"/>
+      <remap from="planning/position_cmd_vis" to="/planning/position_cmd_vis_4"/>
+      <remap from="planning/travel_traj" to="/planning/travel_traj_4"/>
+      <param name="traj_server/time_forward" value="1.5" type="double"/>
+      <param name="traj_server/pub_traj_id" value="4" type="int"/>
+      <param name="traj_server/drone_id" value="4" type="int"/>
+      <param name="traj_server/drone_num" value="$(arg planner_drone_num)" type="int"/>
+      <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+      <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+      <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+      <param name="perception_utils/max_dist" value="4.5" type="double"/>
+      <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+    <include file="$(find exploration_manager)/launch/simulator_light.xml">
+      <arg name="drone_id" value="4"/>
+      <arg name="drone_num" value="$(arg planner_drone_num)"/>
+      <arg name="init_x" value="$(arg drone4_init_x)"/>
+      <arg name="init_y" value="$(arg drone4_init_y)"/>
+      <arg name="init_z" value="$(arg drone4_init_z)"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="odometry_topic" value="/relay_odom_4"/>
+    </include>
+  </group>
+
+  <node pkg="relay_racer_integration" type="relay_validation_monitor.py" name="relay_validation_monitor" output="$(arg comm_output)">
+    <param name="agent_id" value="1"/>
+    <param name="relay_role_topic" value="/relay_integration/relay_role_cmd"/>
+    <param name="planning_new_topic" value="/planning/new_1"/>
+    <param name="planning_bspline_topic" value="/planning/bspline_1"/>
+    <param name="planning_pos_cmd_topic" value="/planning/pos_cmd_1"/>
+    <param name="frontier_topic" value="$(arg monitor_frontier_topic)"/>
+    <param name="swarm_comm_state_topic" value="$(arg monitor_swarm_comm_state_topic)"/>
+    <param name="task_metrics_topic" value="$(arg monitor_task_metrics_topic)"/>
+    <param name="report_path" value="$(arg monitor_report_path)"/>
+    <param name="summary_period" value="$(arg monitor_summary_period)"/>
+    <param name="metric_sample_period" value="$(arg monitor_metric_sample_period)"/>
+    <param name="pre_window_sec" value="$(arg monitor_pre_window_sec)"/>
+    <param name="post_window_sec" value="$(arg monitor_post_window_sec)"/>
+    <param name="planning_agent_ids" value="$(arg monitor_planning_agent_ids)"/>
+    <param name="require_pos_cmd" value="$(arg monitor_require_pos_cmd)"/>
+    <param name="frontier_completion_threshold" value="$(arg monitor_frontier_completion_threshold)"/>
+  </node>
+
+  <node if="$(arg trigger_required)"
+        pkg="relay_racer_integration"
+        type="relay_closed_loop_test_node"
+        name="relay_goal_trigger"
+        output="screen"
+        required="false">
+    <param name="test_agent_id" value="1"/>
+    <param name="publish_fake_odom" value="false"/>
+    <param name="call_test_service" value="$(arg trigger_call_test_service)"/>
+    <param name="wait_for_relay_cmd" value="$(arg trigger_wait_for_relay_cmd)"/>
+    <param name="goal_deadline" value="$(arg trigger_goal_deadline)"/>
+    <param name="finish_deadline" value="$(arg trigger_finish_deadline)"/>
+    <param name="failure_deadline" value="$(arg trigger_failure_deadline)"/>
+    <param name="shutdown_on_finish" value="$(arg trigger_shutdown_on_finish)"/>
+    <param name="goal_republish_period" value="$(arg trigger_goal_republish_period)"/>
+    <param name="republish_goal_without_relay" value="$(arg trigger_republish_without_relay)"/>
+    <param name="require_planner_ready" value="$(arg trigger_require_planner_ready)"/>
+    <param name="planner_ready_agent_ids" value="$(arg monitor_planning_agent_ids)"/>
+    <param name="planner_ready_min_messages" value="$(arg trigger_planner_ready_min_messages)"/>
+    <param name="planner_ready_hold_sec" value="$(arg trigger_planner_ready_hold_sec)"/>
+    <param name="post_startup_service_enabled" value="$(arg trigger_post_startup_service_enabled)"/>
+    <param name="post_startup_service_require_goal" value="$(arg trigger_post_startup_service_require_goal)"/>
+    <param name="post_startup_service_require_planning_artifact" value="$(arg trigger_post_startup_service_require_planning_artifact)"/>
+    <param name="post_startup_service_delay_sec" value="$(arg trigger_post_startup_service_delay_sec)"/>
+    <param name="post_startup_service_repeat_count" value="$(arg trigger_post_startup_service_repeat_count)"/>
+    <param name="post_startup_service_repeat_period_sec" value="$(arg trigger_post_startup_service_repeat_period_sec)"/>
+    <param name="planning_artifact_agent_ids" value="$(arg trigger_planning_artifact_agent_ids)"/>
+    <param name="planning_artifact_min_messages" value="$(arg trigger_planning_artifact_min_messages)"/>
+    <param name="service_agent_x_positions" value="$(arg trigger_service_agent_x_positions)"/>
+    <param name="service_edges" value="$(arg trigger_service_edges)"/>
+    <param name="goal_x" value="1.0"/>
+    <param name="goal_y" value="0.0"/>
+    <param name="goal_z" value="1.0"/>
+  </node>
+</launch>

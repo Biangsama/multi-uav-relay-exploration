@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor files
+.vscode/
+.idea/
+
+# ROS / Catkin local artifacts
+build/
+devel/
+logs/
+.catkin_tools/
+
+# OS files
+.DS_Store
+Thumbs.db

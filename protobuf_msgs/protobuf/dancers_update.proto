@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package dancers_update_proto;
+
+message DancersUpdate {
+    enum MsgType {
+        BEGIN = 0;
+        END = 1;
+        CLOSE = 2;
+    }
+
+    // 原有字段：保持不变
+    MsgType msg_type = 1;
+    bytes payload = 2;
+
+    // 新增字段：旁路承载 NET->PHY 的每包接收事件（gzip压缩后的序列化 bytes）
+    // 设计目的：不改动 payload 的语义，保证阶段1/阶段2逐步演进时系统仍可运行
+    bytes net_rx_events_gz = 3;
+}

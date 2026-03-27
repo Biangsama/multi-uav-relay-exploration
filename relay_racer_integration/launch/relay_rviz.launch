@@ -1,0 +1,32 @@
+<launch>
+  <arg name="use_rviz" default="true"/>
+  <arg name="use_static_tf" default="true"/>
+  <arg name="world_frame" default="world"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="rviz_config" default="$(find relay_racer_integration)/rviz/relay_swarm.rviz"/>
+  <arg name="relay_hold_sec" default="20.0"/>
+
+  <node if="$(arg use_static_tf)"
+        pkg="tf"
+        type="static_transform_publisher"
+        name="world_to_map_static_tf"
+        args="0 0 0 0 0 0 $(arg world_frame) $(arg map_frame) 100"/>
+
+  <node pkg="relay_racer_integration"
+        type="relay_rviz_overlay.py"
+        name="relay_rviz_overlay"
+        output="screen">
+    <param name="frame_id" value="$(arg map_frame)"/>
+    <param name="relay_role_topic" value="/relay_integration/relay_role_cmd"/>
+    <param name="swarm_comm_state_topic" value="/relay_integration/swarm_comm_state"/>
+    <param name="agent_pose_topic" value="/agent_poses"/>
+    <param name="relay_hold_sec" value="$(arg relay_hold_sec)"/>
+  </node>
+
+  <node if="$(arg use_rviz)"
+        pkg="rviz"
+        type="rviz"
+        name="relay_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen"/>
+</launch>

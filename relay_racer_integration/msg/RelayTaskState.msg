@@ -1,0 +1,11 @@
+Header header
+
+int32 agent_id
+float64 stamp
+int8 relay_role
+bool task_assignable
+int32 grid_count
+float64 last_safety_replan_stamp
+float64 last_plan_fail_stamp
+float64 last_plan_success_stamp
+int32 consecutive_plan_failures

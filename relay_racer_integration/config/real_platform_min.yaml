@@ -1,0 +1,200 @@
+comm_enable: true
+comm_out_topic: /comm/rx_events_bytes
+comm_processing_delay_us: 0
+comm_ttl_us: 5000000
+control_period_us: 100000
+display_network_edges: true
+enable_metrics: false
+error_rate_model: ns3::NistErrorRateModel
+experiment_name: relay_real_input_min
+flocking_flow:
+  flow_id: 2
+  interval: 100000
+  packet_size: 0
+  port: 4000
+  timeout: 500000
+flush_every_n: 20
+frequency: 5000000000.0
+propagation_model: log_distance_range
+log_distance_exponent: 3.5
+log_distance_reference_distance_m: 1.0
+max_comm_range_m: 16.0
+tx_power_dbm: 8.0
+shadowing_enabled: false
+channel_condition_update_period_ms: 20.0
+initial_heading: 0.0
+initial_spacing: 6.0
+initial_x: 0.0
+initial_y: 0.0
+initial_z: 1.0
+initial_positions:
+  - {x: 0.0, y: 0.0, z: 1.0, heading: 0.0}
+  - {x: 0.0, y: -1.0, z: 1.0, heading: 0.0}
+  - {x: 1.0, y: -1.0, z: 1.0, heading: 0.0}
+  - {x: 1.0, y: 0.0, z: 1.0, heading: 0.0}
+log_payload_bytes: false
+log_rtt: false
+log_service_timing: false
+metrics_dir: logs
+net_enable_metrics: false
+net_ip_server_address: 127.0.0.1
+net_ip_server_port: 10000
+net_log_per_packet: false
+net_metrics_dir: logs
+net_metrics_flush_every_n: 20
+net_metrics_mode: per_link
+net_step_size: 100000
+net_uds_server_address: /tmp/relay_real_input_net.sock
+net_use_uds: true
+phy_inject_delay_enable: false
+phy_inject_delay_fallback_us: 0
+phy_inject_delay_max_us: 2000000
+phy_inject_delay_min_us: 0
+phy_inject_delay_scale: 1.0
+phy_inject_queue_max_len: 8
+phy_ip_server_address: 127.0.0.1
+phy_ip_server_port: 10000
+phy_step_size: 10000
+phy_uds_server_address: /tmp/relay_real_input_phy.sock
+phy_use_uds: true
+phy_use_vat_service_cmd: false
+phy_vat_service_name: /get_agents_velocities
+phy_vat_timeout_ms: 200
+real_time_factor: 5.0
+request_commands_period: 100000
+results_folder: /home/zby/relay_explore_ws/logs/relay_real_input_min
+robots_number: 4
+ros_log_level: info
+save_compute_time: false
+seed: 42
+short_guard_interval_supported: false
+simulation_length: 300
+sync_window: 100000
+verbose: false
+wifi_phy_mode: HeMcs4
+wifi_standard: 802.11ax
+# relay_racer_integration ns3 tuning begin
+obstacles:
+  - {x: 3.550000, y: -17.350000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: 4.550000, y: -8.250000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -6.050000, y: -8.650000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -2.750000, y: -13.350000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -2.750000, y: -1.050000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 3.450000, y: -14.350000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 5.750000, y: -3.950000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -3.650000, y: -18.650000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -5.950000, y: -20.350000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -3.450000, y: -6.450000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 2.550000, y: -1.950000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 0.350000, y: -9.550000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 6.250000, y: -23.050000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 5.050000, y: -12.150000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.950000, y: -6.650000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 1.850000, y: -21.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.150000, y: -20.850000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 1.050000, y: -26.050000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -5.750000, y: -25.250000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.150000, y: -16.250000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 0.050000, y: -18.550000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -4.550000, y: -22.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.250000, y: -16.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 2.150000, y: -5.550000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.250000, y: -19.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 3.650000, y: -25.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -6.050000, y: -0.850000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 3.050000, y: -10.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.850000, y: -23.550000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.550000, y: -0.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.450000, y: -5.750000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -1.250000, y: -3.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: -27.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.850000, y: -1.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.750000, y: -22.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.650000, y: -23.750000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.950000, y: -10.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -4.550000, y: -11.750000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.250000, y: -10.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.750000, y: -3.850000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.250000, y: -5.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: -21.050000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.550000, y: -17.050000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 3.050000, y: -23.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -4.650000, y: -2.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.850000, y: -27.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: -16.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.950000, y: -16.350000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.750000, y: -3.050000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 5.750000, y: -14.650000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.250000, y: -25.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.450000, y: -7.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -0.850000, y: -5.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -1.250000, y: -26.350000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -5.150000, y: -14.850000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -0.450000, y: -0.850000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -2.750000, y: -10.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.550000, y: -12.850000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.550000, y: -24.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.750000, y: -21.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -2.050000, y: -8.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 3.550000, y: 10.050000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: 4.550000, y: 19.150000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -6.050000, y: 18.750000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -2.750000, y: 14.050000, size_x: 1.300000, size_y: 1.300000, size_z: 3.000000}
+  - {x: -2.750000, y: 26.350000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 3.450000, y: 13.050000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 5.750000, y: 23.450000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -3.650000, y: 8.750000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -5.950000, y: 7.050000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: -3.450000, y: 20.950000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 2.550000, y: 25.450000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 0.350000, y: 17.850000, size_x: 1.100000, size_y: 1.100000, size_z: 3.000000}
+  - {x: 6.250000, y: 4.350000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 5.050000, y: 15.250000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.950000, y: 20.750000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 1.850000, y: 5.950000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.150000, y: 6.550000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 1.050000, y: 1.350000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -5.750000, y: 2.150000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.150000, y: 11.150000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 0.050000, y: 8.850000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -4.550000, y: 4.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.250000, y: 10.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 2.150000, y: 21.850000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.250000, y: 7.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 3.650000, y: 1.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -6.050000, y: 26.550000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 3.050000, y: 16.450000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: -1.850000, y: 3.850000, size_x: 0.900000, size_y: 0.900000, size_z: 3.000000}
+  - {x: 6.550000, y: 27.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.450000, y: 21.650000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -1.250000, y: 24.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: 0.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.850000, y: 25.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.750000, y: 4.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.650000, y: 3.650000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.950000, y: 16.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -4.550000, y: 15.650000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.250000, y: 16.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.750000, y: 23.550000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.250000, y: 22.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: 6.350000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.550000, y: 10.350000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 3.050000, y: 4.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -4.650000, y: 24.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.850000, y: 0.250000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.350000, y: 11.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.950000, y: 11.050000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.750000, y: 24.350000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 5.750000, y: 12.750000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 6.250000, y: 2.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 0.450000, y: 20.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -0.850000, y: 21.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -1.250000, y: 1.050000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -5.150000, y: 12.550000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -0.450000, y: 26.550000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -2.750000, y: 17.150000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -6.550000, y: 14.550000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -3.550000, y: 2.450000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: 4.750000, y: 5.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+  - {x: -2.050000, y: 18.950000, size_x: 0.700000, size_y: 0.700000, size_z: 3.000000}
+# relay_racer_integration ns3 tuning end

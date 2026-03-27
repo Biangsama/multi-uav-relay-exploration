@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>protobuf_msgs</name>
+  <version>0.0.0</version>
+  <description>ROS1 catkin wrapper around the platform protobuf definitions.</description>
+
+  <maintainer email="zby@example.com">zby</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>protobuf</build_depend>
+  <build_depend>protobuf-compiler</build_depend>
+
+  <build_export_depend>protobuf</build_export_depend>
+  <build_export_depend>protobuf-compiler</build_export_depend>
+
+  <exec_depend>protobuf</exec_depend>
+</package>

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package protobuf_msgs;
+
+// 单个“接收事件”（按包粒度）
+// 语义：网络侧观测到：src 发出一个包（seq），dst 在 rx_time_us 收到；tx_time_us 来自包头；
+// delay_us 也可以由 rx_time_us - tx_time_us 计算，这里直接带上方便用。
+message RxEvent {
+  uint32 src_id = 1;        // 发送方 node id（建议用你包头 sender_id）
+  uint32 dst_id = 2;        // 接收方 node id（建议用接收 socket 所在 node id）
+  uint32 flow_id = 3;       // 流 id（你包头里有）
+  uint32 seq = 4;           // 序号（你包头里有）
+
+  uint64 tx_time_us = 5;    // 发送时刻（你包头里有）
+  uint64 rx_time_us = 6;    // 接收时刻（ns3 Simulator::Now()）
+  uint64 delay_us   = 7;    // rx - tx（可选，重复字段，便于下游直接用）
+
+  uint32 payload_bytes = 8; // 包大小（可用 packet->GetSize()）
+  int32  rssi_dbm_x10  = 9; // 可选：RSSI(dBm*10)，没有就写 0
+  bool   is_duplicate  = 10;// 可选：是否重复包（没有就 false）
+
+  // 发送时刻随包头采样到的邻居状态（Tutorial 4 controller 用于一致性重建）
+  bool   has_packet_state = 11;
+  double pos_x = 12;
+  double pos_y = 13;
+  double pos_z = 14;
+  double vel_x = 15;
+  double vel_y = 16;
+  double vel_z = 17;
+
+  // 该包承载的 waypoint（建议传 ENU 世界坐标，便于控制器直接使用）
+  double wp_x = 20;
+  double wp_y = 21;
+  double wp_z = 22;
+}
+
+// 一个同步窗口（或一次 SYNC）内收集到的所有事件集合
+// 注意：这只是“日志/事件流”，不替换你现有 CmdPayload（避免你说的阶段1跑不起来）。
+message NetRxEventsPayload {
+  uint64 t_window_start_us = 1; // 该批事件对应的窗口起始（可选）
+  uint64 t_window_end_us   = 2; // 窗口结束（可选）
+  repeated RxEvent events  = 3; // 按包记录的事件列表
+}

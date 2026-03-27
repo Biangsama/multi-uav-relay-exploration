@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package relay_racer_proto;
+
+message RacerSwarmMsg {
+  string family = 1;
+  uint32 src_id = 2;     // RACER drone id
+  uint32 dst_id = 3;     // RACER drone id on delivery, 0 while pending broadcast
+  uint64 bridge_seq = 4;
+  uint64 stamp_us = 5;
+  string ros_datatype = 6;
+  string ros_md5 = 7;
+  string ros_msg_def = 8;
+  string ros_latching = 9;
+  bytes ros_payload = 10;
+  uint32 network_tx_id = 11;   // current ns3 transmitter, defaults to src_id
+  uint32 relay_hop_count = 12; // explicit relay forwards already applied
+  uint32 max_relay_hops = 13;  // forwarding budget, 0 disables relay forwarding
+}

@@ -1,0 +1,33 @@
+<launch>
+  <param name="/use_sim_time" value="false"/>
+  <arg name="relay_policy_mode" default="rule"/>
+
+  <node pkg="relay_racer_integration" type="racer_comm_controller_node" name="racer_comm_controller" output="screen">
+    <rosparam command="load" file="$(find relay_racer_integration)/config/relay_rules.yaml"/>
+    <param name="relay_policy_mode" value="$(arg relay_policy_mode)"/>
+  </node>
+
+  <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
+    <arg name="map_size_x" value="30.0"/>
+    <arg name="map_size_y" value="30.0"/>
+    <arg name="map_size_z" value="3.0"/>
+    <arg name="drone_id" value="1"/>
+    <arg name="drone_num" value="4"/>
+    <arg name="odometry_topic" value="/relay_test/odom_1"/>
+    <arg name="sensor_pose_topic" value="/relay_test/sensor_pose_1"/>
+    <arg name="depth_topic" value="/relay_test/depth_1"/>
+    <arg name="cloud_topic" value="/relay_test/cloud_1"/>
+    <arg name="cx" value="320.0"/>
+    <arg name="cy" value="240.0"/>
+    <arg name="fx" value="320.0"/>
+    <arg name="fy" value="320.0"/>
+    <arg name="max_vel" value="1.0"/>
+    <arg name="max_acc" value="1.0"/>
+    <arg name="simulation" value="true"/>
+    <arg name="single_expo" value="false"/>
+  </include>
+
+  <node pkg="relay_racer_integration" type="relay_closed_loop_test_node" name="relay_closed_loop_test" output="screen" required="true">
+    <param name="test_agent_id" value="1"/>
+  </node>
+</launch>

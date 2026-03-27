@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>connector_core</name>
+  <version>0.0.0</version>
+  <description>ROS1 core utilities and connector base classes for the DANCERS platform.</description>
+
+  <maintainer email="zby@example.com">zby</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>protobuf_msgs</build_depend>
+  <build_depend>roscpp</build_depend>
+
+  <build_export_depend>protobuf_msgs</build_export_depend>
+  <build_export_depend>roscpp</build_export_depend>
+
+  <exec_depend>protobuf_msgs</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+
+  <depend>boost</depend>
+  <depend>yaml-cpp</depend>
+</package>
