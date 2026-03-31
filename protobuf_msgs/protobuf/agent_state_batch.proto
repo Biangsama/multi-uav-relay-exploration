@@ -13,6 +13,8 @@ message AgentStateSample {
   double heading = 8;
   uint64 source_stamp_us = 9;
   bool has_real_state = 10;
+  uint64 age_us = 11;
+  bool is_fresh = 12;
 }
 
 message AgentStateBatch {

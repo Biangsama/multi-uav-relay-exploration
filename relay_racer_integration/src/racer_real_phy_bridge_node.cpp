@@ -42,6 +42,8 @@ class RacerRealPhyBridge : public Connector {
     if (trace_agent_state_batch_every_n_ <= 0) {
       trace_agent_state_batch_every_n_ = 1;
     }
+    pnh_.param("ignore_stale_agent_states", ignore_stale_agent_states_, true);
+    pnh_.param("warn_on_stale_agent_states", warn_on_stale_agent_states_, true);
 
     InitFallbackStates();
 
@@ -201,8 +203,26 @@ class RacerRealPhyBridge : public Connector {
     }
 
     size_t applied_states = 0;
+    size_t skipped_stale_states = 0;
+    size_t skipped_nonreal_states = 0;
+    uint64_t max_skipped_age_us = 0;
     std::lock_guard<std::mutex> lock(snapshots_mutex_);
     for (const auto& sample : batch.states()) {
+      const bool sample_usable = sample.has_real_state() && sample.is_fresh();
+      if (ignore_stale_agent_states_ && !sample_usable) {
+        auto state_it = snapshots_.find(sample.agent_id());
+        if (state_it != snapshots_.end()) {
+          state_it->second.has_real_state = false;
+        }
+        if (sample.has_real_state()) {
+          ++skipped_stale_states;
+          max_skipped_age_us = std::max<uint64_t>(max_skipped_age_us, sample.age_us());
+        } else {
+          ++skipped_nonreal_states;
+        }
+        continue;
+      }
+
       AgentSnapshot& state = snapshots_[sample.agent_id()];
       state.x = sample.x();
       state.y = sample.y();
@@ -219,14 +239,27 @@ class RacerRealPhyBridge : public Connector {
       state.has_real_state = sample.has_real_state();
       ++applied_states;
     }
-    last_real_states_update_ = ros::Time::now();
+    if (applied_states > 0) {
+      last_real_states_update_ = ros::Time::now();
+    }
+    if (warn_on_stale_agent_states_ && (skipped_stale_states > 0 || skipped_nonreal_states > 0)) {
+      ROS_WARN_THROTTLE(1.0,
+                        "[PHY_BRIDGE] skipped stale/non-real coordinator agent states sample_seq=%lu applied=%zu skipped_stale=%zu skipped_nonreal=%zu max_skipped_age_us=%lu",
+                        static_cast<unsigned long>(batch.sample_seq()),
+                        applied_states,
+                        skipped_stale_states,
+                        skipped_nonreal_states,
+                        static_cast<unsigned long>(max_skipped_age_us));
+    }
     if (trace_agent_state_batch_enable_ &&
         (batch.sample_seq() % static_cast<uint64_t>(trace_agent_state_batch_every_n_)) == 0) {
-      ROS_INFO("[AGENT_STATE_TRACE][PHY] sample_seq=%lu t_sample_us=%lu batch_states=%d applied_states=%zu",
+      ROS_INFO("[AGENT_STATE_TRACE][PHY] sample_seq=%lu t_sample_us=%lu batch_states=%d applied=%zu skipped_stale=%zu skipped_nonreal=%zu",
                static_cast<unsigned long>(batch.sample_seq()),
                static_cast<unsigned long>(batch.t_sample_us()),
                batch.states_size(),
-               applied_states);
+               applied_states,
+               skipped_stale_states,
+               skipped_nonreal_states);
     }
   }
 
@@ -511,6 +544,8 @@ class RacerRealPhyBridge : public Connector {
   int trace_swarm_msg_bridge_seq_{-1};
   bool trace_agent_state_batch_enable_{false};
   int trace_agent_state_batch_every_n_{1};
+  bool ignore_stale_agent_states_{true};
+  bool warn_on_stale_agent_states_{true};
   ros::Time last_real_states_update_;
 
   mutable std::mutex snapshots_mutex_;

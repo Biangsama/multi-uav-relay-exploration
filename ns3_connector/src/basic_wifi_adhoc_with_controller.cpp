@@ -126,7 +126,8 @@ public:
         pnh_.param("swarm_msg_flow_id", swarm_msg_flow_id_param, 30);
         swarm_msg_port_ = static_cast<uint32_t>(std::max(0, swarm_msg_port_param));
         swarm_msg_flow_id_ = static_cast<uint32_t>(std::max(0, swarm_msg_flow_id_param));
-        pnh_.param("swarm_msg_queue_limit", swarm_msg_queue_limit_, 200);
+        pnh_.param("swarm_msg_queue_limit", swarm_msg_queue_limit_, 0);
+        pnh_.param("swarm_msg_queue_warn_threshold", swarm_msg_queue_warn_threshold_, 200);
         pnh_.param<std::string>(
             "swarm_msg_tx_topic",
             swarm_msg_tx_topic_,
@@ -145,6 +146,8 @@ public:
         {
             trace_agent_state_batch_every_n_ = 1;
         }
+        pnh_.param("ignore_stale_agent_states", ignore_stale_agent_states_, true);
+        pnh_.param("warn_on_stale_agent_states", warn_on_stale_agent_states_, true);
         if (enable_swarm_msg_transport_)
         {
             swarm_tx_sub_ = nh_.subscribe(
@@ -154,12 +157,14 @@ public:
                 this);
             RCLCPP_INFO(
                 this->get_logger(),
-                "[NET] enable_swarm_msg_transport=true tx_topic=%s delayed_rx_topic=%s port=%u flow_id=%u id_offset=%d",
+                "[NET] enable_swarm_msg_transport=true tx_topic=%s delayed_rx_topic=%s port=%u flow_id=%u id_offset=%d queue_limit=%d warn_threshold=%d",
                 swarm_msg_tx_topic_.c_str(),
                 swarm_msg_rx_topic_.c_str(),
                 swarm_msg_port_,
                 swarm_msg_flow_id_,
-                swarm_msg_id_offset_);
+                swarm_msg_id_offset_,
+                swarm_msg_queue_limit_,
+                swarm_msg_queue_warn_threshold_);
         }
 
         // Configure global ns-3 objects
@@ -622,16 +627,20 @@ private:
     int swarm_msg_id_offset_{-1};
     uint32_t swarm_msg_port_{4100};
     uint32_t swarm_msg_flow_id_{30};
-    int swarm_msg_queue_limit_{200};
+    int swarm_msg_queue_limit_{0};
+    int swarm_msg_queue_warn_threshold_{200};
     bool trace_swarm_msg_enable_{false};
     std::string trace_swarm_msg_family_;
     int trace_swarm_msg_src_id_{-1};
     int trace_swarm_msg_bridge_seq_{-1};
     bool trace_agent_state_batch_enable_{false};
     int trace_agent_state_batch_every_n_{1};
+    bool ignore_stale_agent_states_{true};
+    bool warn_on_stale_agent_states_{true};
     std::string swarm_msg_tx_topic_;
     std::string swarm_msg_rx_topic_;
     std::deque<PendingSwarmTxMsg> pending_swarm_tx_msgs_;
+    uint64_t pending_swarm_tx_bytes_{0};
     std::mutex swarm_msg_tx_mutex_;
     uint64_t swarm_tx_ros_msgs_{0};
     uint64_t swarm_tx_ns3_msgs_{0};
@@ -1084,12 +1093,30 @@ void BasicWifiAdhoc::UpdateAgentsPosition(const dancers_update_proto::DancersUpd
         }
 
         size_t applied_states = 0;
+        size_t skipped_stale_states = 0;
+        size_t skipped_nonreal_states = 0;
+        uint64_t max_skipped_age_us = 0;
         std::unique_lock lock(this->agents_mutex_);
         for (const auto& sample : batch.states())
         {
             auto agent = this->agents_.find(sample.agent_id());
             if (agent == this->agents_.end())
             {
+                continue;
+            }
+
+            const bool sample_usable = sample.has_real_state() && sample.is_fresh();
+            if (ignore_stale_agent_states_ && !sample_usable)
+            {
+                if (sample.has_real_state())
+                {
+                    ++skipped_stale_states;
+                    max_skipped_age_us = std::max<uint64_t>(max_skipped_age_us, sample.age_us());
+                }
+                else
+                {
+                    ++skipped_nonreal_states;
+                }
                 continue;
             }
 
@@ -1104,14 +1131,26 @@ void BasicWifiAdhoc::UpdateAgentsPosition(const dancers_update_proto::DancersUpd
                 agent->second->initial_position_saved = true;
             }
         }
+        if (warn_on_stale_agent_states_ && (skipped_stale_states > 0 || skipped_nonreal_states > 0))
+        {
+            ROS_WARN_THROTTLE(1.0,
+                              "[NET] skipped stale/non-real coordinator agent states sample_seq=%lu applied=%zu skipped_stale=%zu skipped_nonreal=%zu max_skipped_age_us=%lu",
+                              static_cast<unsigned long>(batch.sample_seq()),
+                              applied_states,
+                              skipped_stale_states,
+                              skipped_nonreal_states,
+                              static_cast<unsigned long>(max_skipped_age_us));
+        }
         if (trace_agent_state_batch_enable_ &&
             (batch.sample_seq() % static_cast<uint64_t>(trace_agent_state_batch_every_n_)) == 0)
         {
-            ROS_INFO("[AGENT_STATE_TRACE][NET] sample_seq=%lu t_sample_us=%lu batch_states=%d applied_states=%zu",
+            ROS_INFO("[AGENT_STATE_TRACE][NET] sample_seq=%lu t_sample_us=%lu batch_states=%d applied=%zu skipped_stale=%zu skipped_nonreal=%zu",
                      static_cast<unsigned long>(batch.sample_seq()),
                      static_cast<unsigned long>(batch.t_sample_us()),
                      batch.states_size(),
-                     applied_states);
+                     applied_states,
+                     skipped_stale_states,
+                     skipped_nonreal_states);
         }
         return;
     }
@@ -1254,12 +1293,26 @@ void BasicWifiAdhoc::swarmTxBytesCallback(const std_msgs::UInt8MultiArrayConstPt
                     " queue_limit=" + std::to_string(swarm_msg_queue_limit_) +
                     " pending_before=" + std::to_string(pending_swarm_tx_msgs_.size()));
         }
+        pending_swarm_tx_bytes_ -= pending_swarm_tx_msgs_.front().bytes.size();
         pending_swarm_tx_msgs_.pop_front();
         ROS_WARN_THROTTLE(1.0, "[NET] swarm tx queue full, dropping oldest pending swarm packet.");
     }
 
     pending_swarm_tx_msgs_.push_back(
         PendingSwarmTxMsg{static_cast<uint32_t>(platform_src_id), bytes});
+    pending_swarm_tx_bytes_ += bytes.size();
+
+    if (swarm_msg_queue_warn_threshold_ > 0 &&
+        pending_swarm_tx_msgs_.size() >= static_cast<size_t>(swarm_msg_queue_warn_threshold_))
+    {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "[NET] swarm tx pending queue backlog size=%zu bytes=%lu limit=%d warn_threshold=%d",
+            pending_swarm_tx_msgs_.size(),
+            static_cast<unsigned long>(pending_swarm_tx_bytes_),
+            swarm_msg_queue_limit_,
+            swarm_msg_queue_warn_threshold_);
+    }
 
     if (ShouldTraceSwarmWrapper_(wrapper))
     {
@@ -1280,6 +1333,7 @@ void BasicWifiAdhoc::DrainPendingSwarmTx_()
     {
         std::lock_guard<std::mutex> lock(swarm_msg_tx_mutex_);
         pending.swap(pending_swarm_tx_msgs_);
+        pending_swarm_tx_bytes_ = 0;
     }
 
     for (const auto& item : pending)

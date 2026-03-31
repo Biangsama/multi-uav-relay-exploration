@@ -169,6 +169,18 @@ public:
         pnh_.param<std::string>("odom_topic_prefix", odom_topic_prefix_, std::string("/relay_odom_"));
         pnh_.param("id_offset", id_offset_, -1);
         pnh_.param("real_state_stale_warn_sec", real_state_stale_warn_sec_, 1.0);
+        int agent_state_max_age_us_param = static_cast<int>(std::max<uint64_t>(step_size_us_ * 25, 250000ull));
+        pnh_.param("agent_state_max_age_us",
+                   agent_state_max_age_us_param,
+                   agent_state_max_age_us_param);
+        agent_state_max_age_us_ = static_cast<uint64_t>(std::max(0, agent_state_max_age_us_param));
+        int agent_state_future_tolerance_us_param =
+            static_cast<int>(std::max<uint64_t>(step_size_us_, 1000ull));
+        pnh_.param("agent_state_future_tolerance_us",
+                   agent_state_future_tolerance_us_param,
+                   agent_state_future_tolerance_us_param);
+        agent_state_future_tolerance_us_ =
+            static_cast<uint64_t>(std::max(0, agent_state_future_tolerance_us_param));
         std::string racer_ids_csv;
         pnh_.param<std::string>("racer_ids", racer_ids_csv, std::string());
 
@@ -211,6 +223,37 @@ private:
         uint64_t source_stamp_us{0};
         bool has_real_state{false};
     };
+
+    struct AgentStateFreshness
+    {
+        bool has_real_state_source{false};
+        bool is_fresh{false};
+        uint64_t age_us{0};
+    };
+
+    AgentStateFreshness EvaluateAgentStateFreshness_(
+        const CachedAgentState& state,
+        const uint64_t t_sample_us) const
+    {
+        AgentStateFreshness freshness;
+        freshness.has_real_state_source = state.has_real_state && state.source_stamp_us > 0;
+        if (!freshness.has_real_state_source)
+        {
+            return freshness;
+        }
+
+        if (state.source_stamp_us > t_sample_us)
+        {
+            const uint64_t lead_us = state.source_stamp_us - t_sample_us;
+            freshness.age_us = lead_us;
+            freshness.is_fresh = lead_us <= agent_state_future_tolerance_us_;
+            return freshness;
+        }
+
+        freshness.age_us = t_sample_us - state.source_stamp_us;
+        freshness.is_fresh = freshness.age_us <= agent_state_max_age_us_;
+        return freshness;
+    }
 
     bool ShouldTraceSwarmWrapper_(const relay_racer_proto::RacerSwarmMsg& wrapper) const
     {
@@ -479,13 +522,17 @@ private:
         batch.set_t_sample_us(t_sample_us);
         batch.set_window_idx(sample_seq);
 
-        bool has_missing_real_state = false;
-        size_t real_state_count = 0;
+        size_t fresh_state_count = 0;
+        size_t stale_state_count = 0;
         size_t fallback_state_count = 0;
+        std::vector<std::string> stale_state_details;
         {
             std::lock_guard<std::mutex> lock(agent_states_mutex_);
             for (const auto& [agent_id, state] : cached_agent_states_)
             {
+                const AgentStateFreshness freshness =
+                    EvaluateAgentStateFreshness_(state, t_sample_us);
+
                 auto* sample = batch.add_states();
                 sample->set_agent_id(agent_id);
                 sample->set_x(state.x);
@@ -496,31 +543,63 @@ private:
                 sample->set_vz(state.vz);
                 sample->set_heading(state.heading);
                 sample->set_source_stamp_us(state.source_stamp_us);
-                sample->set_has_real_state(state.has_real_state);
-                has_missing_real_state = has_missing_real_state || !state.has_real_state;
-                if (state.has_real_state)
+                sample->set_has_real_state(freshness.has_real_state_source);
+                sample->set_age_us(freshness.age_us);
+                sample->set_is_fresh(freshness.is_fresh);
+
+                if (!freshness.has_real_state_source)
                 {
-                    ++real_state_count;
+                    ++fallback_state_count;
+                    continue;
+                }
+
+                if (freshness.is_fresh)
+                {
+                    ++fresh_state_count;
                 }
                 else
                 {
-                    ++fallback_state_count;
+                    ++stale_state_count;
+                    if (stale_state_details.size() < 6)
+                    {
+                        stale_state_details.push_back(
+                            std::to_string(agent_id) + ":" + std::to_string(freshness.age_us) + "us");
+                    }
                 }
             }
         }
 
-        if (has_missing_real_state)
+        if (fallback_state_count > 0)
         {
             ROS_WARN_THROTTLE(2.0,
-                              "[COORD] agent state batch contains fallback states; waiting for real /relay_odom_* samples.");
+                              "[COORD] agent state batch contains %zu fallback states; waiting for real /relay_odom_* samples.",
+                              fallback_state_count);
         }
-        else if (!last_real_state_update_wall_.isZero())
+        if (stale_state_count > 0)
+        {
+            std::ostringstream stale_stream;
+            for (std::size_t i = 0; i < stale_state_details.size(); ++i)
+            {
+                if (i != 0)
+                {
+                    stale_stream << ",";
+                }
+                stale_stream << stale_state_details[i];
+            }
+            ROS_WARN_THROTTLE(1.0,
+                              "[COORD] agent state batch contains %zu stale real states older than %luus (sample=%lu details=%s).",
+                              stale_state_count,
+                              static_cast<unsigned long>(agent_state_max_age_us_),
+                              static_cast<unsigned long>(sample_seq),
+                              stale_stream.str().c_str());
+        }
+        if (!last_real_state_update_wall_.isZero())
         {
             const double stale_sec = (ros::WallTime::now() - last_real_state_update_wall_).toSec();
             if (stale_sec > real_state_stale_warn_sec_)
             {
                 ROS_WARN_THROTTLE(2.0,
-                                  "[COORD] real odom updates stale for %.3fs while sampling strict-lockstep state batches.",
+                                  "[COORD] real odom updates globally stale for %.3fs while sampling strict-lockstep state batches.",
                                   stale_sec);
             }
         }
@@ -528,11 +607,12 @@ private:
         if (trace_agent_state_batch_enable_ &&
             (sample_seq % static_cast<uint64_t>(trace_agent_state_batch_every_n_)) == 0)
         {
-            ROS_INFO("[AGENT_STATE_TRACE][COORD] sample_seq=%lu t_sample_us=%lu states=%d real=%zu fallback=%zu",
+            ROS_INFO("[AGENT_STATE_TRACE][COORD] sample_seq=%lu t_sample_us=%lu states=%d fresh=%zu stale=%zu fallback=%zu",
                      static_cast<unsigned long>(sample_seq),
                      static_cast<unsigned long>(t_sample_us),
                      batch.states_size(),
-                     real_state_count,
+                     fresh_state_count,
+                     stale_state_count,
                      fallback_state_count);
         }
 
@@ -843,6 +923,8 @@ private:
     std::string odom_topic_prefix_;
     int id_offset_{-1};
     double real_state_stale_warn_sec_{1.0};
+    uint64_t agent_state_max_age_us_{100000};
+    uint64_t agent_state_future_tolerance_us_{1000};
     std::vector<int> racer_ids_;
     std::vector<ros::Subscriber> odom_subscribers_;
 

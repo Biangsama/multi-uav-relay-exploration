@@ -140,6 +140,8 @@
     <param name="racer_ids" value="1,2,3,4"/>
     <param name="id_offset" value="-1"/>
     <param name="odom_topic_prefix" value="/relay_odom_"/>
+    <param name="agent_state_max_age_us" value="250000"/>
+    <param name="agent_state_future_tolerance_us" value="20000"/>
   </node>
 
   <node pkg="relay_racer_integration" type="racer_real_phy_bridge_node" name="racer_real_phy_bridge" output="$(arg platform_output)">
@@ -157,6 +159,8 @@
     <param name="swarm_msg_id_offset" value="-1"/>
     <param name="swarm_msg_tx_topic" value="/relay_integration/racer_swarm_tx_bytes"/>
     <param name="swarm_msg_rx_topic" value="/relay_integration/racer_swarm_rx_bytes"/>
+    <param name="swarm_msg_queue_limit" value="0"/>
+    <param name="swarm_msg_queue_warn_threshold" value="200"/>
   </node>
 
   <node pkg="relay_racer_integration" type="racer_msg_tx_bridge_node" name="racer_msg_tx_bridge" output="$(arg platform_output)">
