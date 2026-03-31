@@ -166,21 +166,23 @@
   <node pkg="coordinator" type="coordinator" name="coordinator" output="$(arg platform_output)">
     <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
     <param name="config_file" value="$(arg config_file)"/>
+    <param name="strict_lockstep" value="true"/>
+    <param name="racer_ids" value="1,2,3,4,5,6"/>
+    <param name="id_offset" value="-1"/>
+    <param name="odom_topic_prefix" value="/relay_odom_"/>
   </node>
 
   <node pkg="relay_racer_integration" type="racer_real_phy_bridge_node" name="racer_real_phy_bridge" output="$(arg platform_output)">
     <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
     <param name="config_file" value="$(arg config_file)"/>
-    <param name="agent_states_topic" value="/relay_integration/platform_agent_structs"/>
+    <param name="subscribe_agent_states_topic" value="false"/>
     <param name="real_states_stale_warn_sec" value="1.0"/>
   </node>
 
   <node pkg="ns3_connector" type="basic_wifi_adhoc_with_controller" name="basic_wifi_adhoc_with_controller" output="$(arg platform_output)">
     <env name="ROS_WS" value="/home/zby/relay_explore_ws"/>
     <param name="config_file" value="$(arg config_file)"/>
-    <param name="prefer_real_agent_states" value="true"/>
-    <param name="real_agent_states_topic" value="/relay_integration/platform_agent_structs"/>
-    <param name="real_agent_states_timeout_sec" value="1.0"/>
+    <param name="prefer_real_agent_states" value="false"/>
     <param name="enable_swarm_msg_transport" value="true"/>
     <param name="swarm_msg_id_offset" value="-1"/>
     <param name="swarm_msg_tx_topic" value="/relay_integration/racer_swarm_tx_bytes"/>

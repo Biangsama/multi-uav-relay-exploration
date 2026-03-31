@@ -16,4 +16,11 @@ message DancersUpdate {
     // 新增字段：旁路承载 NET->PHY 的每包接收事件（gzip压缩后的序列化 bytes）
     // 设计目的：不改动 payload 的语义，保证阶段1/阶段2逐步演进时系统仍可运行
     bytes net_rx_events_gz = 3;
+
+    // 新增字段：NET->PHY 的带包体延迟投递批次（gzip压缩后的序列化 bytes）
+    // PHY 侧按包内 rx_time_us 作为唯一权威时序释放给 ROS 接收节点。
+    bytes delivered_swarm_packets_gz = 4;
+
+    // 严格锁步同步下，coordinator 每步采样一次 UAV 状态并统一下发给 NET/PHY。
+    bytes agent_states_gz = 5;
 }

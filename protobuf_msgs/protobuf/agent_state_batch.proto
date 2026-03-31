@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package protobuf_msgs;
+
+message AgentStateSample {
+  uint32 agent_id = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  double vx = 5;
+  double vy = 6;
+  double vz = 7;
+  double heading = 8;
+  uint64 source_stamp_us = 9;
+  bool has_real_state = 10;
+}
+
+message AgentStateBatch {
+  uint64 sample_seq = 1;
+  uint64 t_sample_us = 2;
+  uint64 window_idx = 3;
+  repeated AgentStateSample states = 4;
+}

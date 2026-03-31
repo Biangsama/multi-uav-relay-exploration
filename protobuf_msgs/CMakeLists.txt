@@ -11,6 +11,7 @@ set(PROTO_FILES
   protobuf/velocity_heading_vector.proto
   protobuf/state_payload.proto
   protobuf/net_rx_events.proto
+  protobuf/agent_state_batch.proto
   protobuf/racer_swarm_msg.proto
 )
 

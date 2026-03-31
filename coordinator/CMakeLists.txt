@@ -5,6 +5,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(catkin REQUIRED COMPONENTS
   connector_core
+  nav_msgs
   protobuf_msgs
   roscpp
   rosgraph_msgs
@@ -13,7 +14,7 @@ find_package(Boost REQUIRED COMPONENTS fiber iostreams)
 find_package(yaml-cpp REQUIRED)
 
 catkin_package(
-  CATKIN_DEPENDS connector_core protobuf_msgs roscpp rosgraph_msgs
+  CATKIN_DEPENDS connector_core nav_msgs protobuf_msgs roscpp rosgraph_msgs
 )
 
 add_executable(coordinator src/coordinator.cpp)

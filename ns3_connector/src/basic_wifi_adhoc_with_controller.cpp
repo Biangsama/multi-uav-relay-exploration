@@ -43,6 +43,7 @@
 #include <protobuf_msgs/pose_vector.pb.h>
 #include <protobuf_msgs/state_payload.pb.h>   // <-- NEW: CmdPayload / NodeCommMetrics
 #include <protobuf_msgs/net_rx_events.pb.h>  // <-- NEW: NetRxEventsPayload / RxEvent
+#include <protobuf_msgs/agent_state_batch.pb.h>
 #include <protobuf_msgs/racer_swarm_msg.pb.h>
 
 
@@ -134,6 +135,16 @@ public:
             "swarm_msg_rx_topic",
             swarm_msg_rx_topic_,
             std::string("/relay_integration/racer_swarm_rx_bytes"));
+        pnh_.param("trace_swarm_msg_enable", trace_swarm_msg_enable_, false);
+        pnh_.param<std::string>("trace_swarm_msg_family", trace_swarm_msg_family_, std::string());
+        pnh_.param("trace_swarm_msg_src_id", trace_swarm_msg_src_id_, -1);
+        pnh_.param("trace_swarm_msg_bridge_seq", trace_swarm_msg_bridge_seq_, -1);
+        pnh_.param("trace_agent_state_batch_enable", trace_agent_state_batch_enable_, false);
+        pnh_.param("trace_agent_state_batch_every_n", trace_agent_state_batch_every_n_, 1);
+        if (trace_agent_state_batch_every_n_ <= 0)
+        {
+            trace_agent_state_batch_every_n_ = 1;
+        }
         if (enable_swarm_msg_transport_)
         {
             swarm_tx_sub_ = nh_.subscribe(
@@ -141,10 +152,9 @@ public:
                 200,
                 &BasicWifiAdhoc::swarmTxBytesCallback,
                 this);
-            swarm_rx_pub_ = nh_.advertise<std_msgs::UInt8MultiArray>(swarm_msg_rx_topic_, 200);
             RCLCPP_INFO(
                 this->get_logger(),
-                "[NET] enable_swarm_msg_transport=true tx_topic=%s rx_topic=%s port=%u flow_id=%u id_offset=%d",
+                "[NET] enable_swarm_msg_transport=true tx_topic=%s delayed_rx_topic=%s port=%u flow_id=%u id_offset=%d",
                 swarm_msg_tx_topic_.c_str(),
                 swarm_msg_rx_topic_.c_str(),
                 swarm_msg_port_,
@@ -244,12 +254,10 @@ private:
         // Keep all ns-3 mobility mutations on the simulation thread.
         ApplyCachedAgentStatesToMobility_();
         DrainPendingSwarmTx_();
-        pending_swarm_rx_bytes_.clear();
 
         // Advance step_size seconds in ns-3
         Simulator::Stop(Seconds(step_size));
         Simulator::Run();
-        PublishPendingSwarmRx_();
 
         this->timeoutNeighbors();
         this->DisplayRviz();
@@ -355,14 +363,12 @@ private:
         cp.SerializeToString(&cp_bytes);
         response_msg.set_payload(gzip_compress(cp_bytes));
 
-        // =========================
-        // NEW: side-channel net_rx_events_gz
-        // =========================
+        const uint64_t win_start_us = (t_sim_us > win_dur_us) ? (t_sim_us - win_dur_us) : 0;
+
+        // Preserve the legacy packet-event batch for metrics/diagnostics consumers.
         if (!rx_events_window_.empty())
         {
             protobuf_msgs::NetRxEventsPayload evp;
-
-            uint64_t win_start_us = (t_sim_us > win_dur_us) ? (t_sim_us - win_dur_us) : 0;
             evp.set_t_window_start_us(win_start_us);
             evp.set_t_window_end_us(t_sim_us);
 
@@ -373,14 +379,11 @@ private:
                 uint32_t src_id = (e.hdr_sender_id != 0) ? e.hdr_sender_id : e.tx_id;
                 ev->set_src_id(src_id);
                 ev->set_dst_id(e.rx_id);
-
                 ev->set_flow_id(e.flow_id);
                 ev->set_seq(e.seq);
-
                 ev->set_tx_time_us(e.tx_time_us);
                 ev->set_rx_time_us(e.rx_time_us);
                 ev->set_delay_us(e.delay_us);
-
                 ev->set_payload_bytes(e.pkt_bytes);
 
                 int32_t rssi_x10 = 0;
@@ -389,7 +392,6 @@ private:
                     rssi_x10 = (int32_t)std::llround(e.rx_power_dbm * 10.0);
                 }
                 ev->set_rssi_dbm_x10(rssi_x10);
-
                 ev->set_is_duplicate(e.is_duplicate);
                 ev->set_has_packet_state(e.has_packet_state);
                 ev->set_pos_x(e.pos_x);
@@ -418,10 +420,70 @@ private:
                             response_msg.net_rx_events_gz().size());
             }
         }
-        else
+
+        if (!delivered_swarm_packets_window_.empty())
         {
-            // 没有事件就不发（字段保持 empty）
-            // response_msg.clear_net_rx_events_gz();
+            protobuf_msgs::DeliveredSwarmPacketBatch batch;
+            batch.set_t_window_start_us(win_start_us);
+            batch.set_t_window_end_us(t_sim_us);
+
+            for (const auto& item : delivered_swarm_packets_window_)
+            {
+                auto* packet = batch.add_packets();
+                auto* meta = packet->mutable_meta();
+                const auto& e = item.meta;
+                const uint32_t src_id = (e.hdr_sender_id != 0) ? e.hdr_sender_id : e.tx_id;
+                meta->set_src_id(src_id);
+                meta->set_dst_id(e.rx_id);
+                meta->set_flow_id(e.flow_id);
+                meta->set_seq(e.seq);
+                meta->set_tx_time_us(e.tx_time_us);
+                meta->set_rx_time_us(e.rx_time_us);
+                meta->set_delay_us(e.delay_us);
+                meta->set_payload_bytes(e.pkt_bytes);
+                meta->set_rssi_dbm_x10(item.rssi_dbm_x10);
+                meta->set_is_duplicate(e.is_duplicate);
+                meta->set_has_packet_state(e.has_packet_state);
+                meta->set_pos_x(e.pos_x);
+                meta->set_pos_y(e.pos_y);
+                meta->set_pos_z(e.pos_z);
+                meta->set_vel_x(e.vel_x);
+                meta->set_vel_y(e.vel_y);
+                meta->set_vel_z(e.vel_z);
+                packet->set_wrapped_msg(item.wrapped_msg);
+
+                if (trace_swarm_msg_enable_)
+                {
+                    relay_racer_proto::RacerSwarmMsg wrapper;
+                    if (wrapper.ParseFromString(item.wrapped_msg) && ShouldTraceSwarmWrapper_(wrapper))
+                    {
+                        TraceSwarmWrapper_(
+                            "net_send_to_coord",
+                            wrapper,
+                            "window_idx=" + std::to_string(window_idx_) +
+                                " meta_src_id=" + std::to_string(meta->src_id()) +
+                                " meta_dst_id=" + std::to_string(meta->dst_id()) +
+                                " flow_id=" + std::to_string(meta->flow_id()) +
+                                " seq=" + std::to_string(meta->seq()) +
+                                " rx_time_us=" + std::to_string(meta->rx_time_us()) +
+                                " delay_us=" + std::to_string(meta->delay_us()));
+                    }
+                }
+            }
+
+            std::string batch_raw;
+            batch.SerializeToString(&batch_raw);
+            response_msg.set_delivered_swarm_packets_gz(gzip_compress(batch_raw));
+
+            if (verbose_)
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "[NET] delivered_swarm_packets_gz sent win=%lu packets=%zu raw=%zuB gz=%zuB",
+                            (unsigned long)window_idx_,
+                            delivered_swarm_packets_window_.size(),
+                            batch_raw.size(),
+                            response_msg.delivered_swarm_packets_gz().size());
+            }
         }
 
         return response_msg;
@@ -444,7 +506,10 @@ private:
     ros::Timer req_cmds_timer_;
     void RequestCommandsClbk();
     void DrainPendingSwarmTx_();
-    void PublishPendingSwarmRx_();
+    bool ShouldTraceSwarmWrapper_(const relay_racer_proto::RacerSwarmMsg& wrapper) const;
+    void TraceSwarmWrapper_(const char* stage,
+                            const relay_racer_proto::RacerSwarmMsg& wrapper,
+                            const std::string& extra = std::string()) const;
 
     // ---- neighbor maintenance ----
     void timeoutNeighbors();
@@ -525,7 +590,7 @@ private:
         double rx_power_dbm{std::numeric_limits<double>::quiet_NaN()};
         bool has_rx_power{false};
 
-        bool is_duplicate{false};  // <-- NEW: for NetRxEventsPayload.RxEvent.is_duplicate
+        bool is_duplicate{false};
         bool has_packet_state{false};
         double pos_x{0.0};
         double pos_y{0.0};
@@ -535,8 +600,15 @@ private:
         double vel_z{0.0};
     };
 
+    struct DeliveredSwarmPacketRow
+    {
+        RxEventRow meta;
+        std::string wrapped_msg;
+        int32_t rssi_dbm_x10{0};
+    };
 
     std::vector<RxEventRow> rx_events_window_;
+    std::vector<DeliveredSwarmPacketRow> delivered_swarm_packets_window_;
     mutable std::mutex latest_comm_rx_events_mu_;
     std::string latest_comm_rx_events_raw_;
 
@@ -551,10 +623,15 @@ private:
     uint32_t swarm_msg_port_{4100};
     uint32_t swarm_msg_flow_id_{30};
     int swarm_msg_queue_limit_{200};
+    bool trace_swarm_msg_enable_{false};
+    std::string trace_swarm_msg_family_;
+    int trace_swarm_msg_src_id_{-1};
+    int trace_swarm_msg_bridge_seq_{-1};
+    bool trace_agent_state_batch_enable_{false};
+    int trace_agent_state_batch_every_n_{1};
     std::string swarm_msg_tx_topic_;
     std::string swarm_msg_rx_topic_;
     std::deque<PendingSwarmTxMsg> pending_swarm_tx_msgs_;
-    std::vector<std::string> pending_swarm_rx_bytes_;
     std::mutex swarm_msg_tx_mutex_;
     uint64_t swarm_tx_ros_msgs_{0};
     uint64_t swarm_tx_ns3_msgs_{0};
@@ -989,6 +1066,56 @@ std::optional<uint32_t> BasicWifiAdhoc::GetNodeIndexFromAgentId_(uint32_t agent_
 // NOTE: PHY->NET still legacy PoseVector, so keep parse legacy.
 void BasicWifiAdhoc::UpdateAgentsPosition(const dancers_update_proto::DancersUpdate& update_msg)
 {
+    if (!update_msg.agent_states_gz().empty())
+    {
+        protobuf_msgs::AgentStateBatch batch;
+        try
+        {
+            if (!batch.ParseFromString(gzip_decompress(update_msg.agent_states_gz())))
+            {
+                RCLCPP_ERROR(this->get_logger(), "Failed to parse coordinator agent state batch.");
+                exit(EXIT_FAILURE);
+            }
+        }
+        catch (const std::exception& e)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Failed to decode coordinator agent state batch: %s", e.what());
+            exit(EXIT_FAILURE);
+        }
+
+        size_t applied_states = 0;
+        std::unique_lock lock(this->agents_mutex_);
+        for (const auto& sample : batch.states())
+        {
+            auto agent = this->agents_.find(sample.agent_id());
+            if (agent == this->agents_.end())
+            {
+                continue;
+            }
+
+            agent->second->position = Eigen::Vector3d(sample.x(), sample.y(), sample.z());
+            agent->second->velocity = Eigen::Vector3d(sample.vx(), sample.vy(), sample.vz());
+            agent->second->heading = sample.heading();
+            ++applied_states;
+
+            if (!agent->second->initial_position_saved)
+            {
+                agent->second->initial_position = agent->second->position;
+                agent->second->initial_position_saved = true;
+            }
+        }
+        if (trace_agent_state_batch_enable_ &&
+            (batch.sample_seq() % static_cast<uint64_t>(trace_agent_state_batch_every_n_)) == 0)
+        {
+            ROS_INFO("[AGENT_STATE_TRACE][NET] sample_seq=%lu t_sample_us=%lu batch_states=%d applied_states=%zu",
+                     static_cast<unsigned long>(batch.sample_seq()),
+                     static_cast<unsigned long>(batch.t_sample_us()),
+                     batch.states_size(),
+                     applied_states);
+        }
+        return;
+    }
+
     if (hasFreshRealAgentStates_())
     {
         ROS_INFO_THROTTLE(
@@ -1118,12 +1245,30 @@ void BasicWifiAdhoc::swarmTxBytesCallback(const std_msgs::UInt8MultiArrayConstPt
     if (swarm_msg_queue_limit_ > 0 &&
         pending_swarm_tx_msgs_.size() >= static_cast<size_t>(swarm_msg_queue_limit_))
     {
+        if (ShouldTraceSwarmWrapper_(wrapper))
+        {
+            TraceSwarmWrapper_(
+                "net_tx_queue_drop",
+                wrapper,
+                "platform_src_id=" + std::to_string(platform_src_id) +
+                    " queue_limit=" + std::to_string(swarm_msg_queue_limit_) +
+                    " pending_before=" + std::to_string(pending_swarm_tx_msgs_.size()));
+        }
         pending_swarm_tx_msgs_.pop_front();
         ROS_WARN_THROTTLE(1.0, "[NET] swarm tx queue full, dropping oldest pending swarm packet.");
     }
 
     pending_swarm_tx_msgs_.push_back(
         PendingSwarmTxMsg{static_cast<uint32_t>(platform_src_id), bytes});
+
+    if (ShouldTraceSwarmWrapper_(wrapper))
+    {
+        TraceSwarmWrapper_(
+            "net_tx_enqueue",
+            wrapper,
+            "platform_src_id=" + std::to_string(platform_src_id) +
+                " pending_after=" + std::to_string(pending_swarm_tx_msgs_.size()));
+    }
 }
 
 void BasicWifiAdhoc::DrainPendingSwarmTx_()
@@ -1145,30 +1290,21 @@ void BasicWifiAdhoc::DrainPendingSwarmTx_()
             ROS_WARN_THROTTLE(1.0, "[NET] no swarm broadcaster for platform agent_id=%u", item.platform_src_id);
             continue;
         }
+
+        if (trace_swarm_msg_enable_)
+        {
+            relay_racer_proto::RacerSwarmMsg wrapper;
+            if (wrapper.ParseFromString(item.bytes) && ShouldTraceSwarmWrapper_(wrapper))
+            {
+                TraceSwarmWrapper_(
+                    "net_broadcast_enqueue",
+                    wrapper,
+                    "platform_src_id=" + std::to_string(item.platform_src_id) +
+                        " batch_size=" + std::to_string(pending.size()));
+            }
+        }
         it->second->EnqueuePayload(item.bytes);
     }
-}
-
-void BasicWifiAdhoc::PublishPendingSwarmRx_()
-{
-    if (!enable_swarm_msg_transport_ || !swarm_rx_pub_)
-        return;
-
-    for (const auto& bytes : pending_swarm_rx_bytes_)
-    {
-        std_msgs::UInt8MultiArray msg;
-        msg.data.assign(bytes.begin(), bytes.end());
-        swarm_rx_pub_.publish(msg);
-        ++swarm_rx_ros_msgs_;
-    }
-    if (!pending_swarm_rx_bytes_.empty())
-    {
-        ROS_INFO_STREAM_THROTTLE(1.0, "[NET][SWARM] published ros rx bytes, ros tx msgs="
-                                 << swarm_tx_ros_msgs_ << " ns3 tx msgs=" << swarm_tx_ns3_msgs_
-                                 << " ns3 rx msgs=" << swarm_rx_ns3_msgs_
-                                 << " ros rx msgs=" << swarm_rx_ros_msgs_);
-    }
-    pending_swarm_rx_bytes_.clear();
 }
 
 void BasicWifiAdhoc::swarmMsgBroadcasterClbk(std::string context, Ptr<const Packet> /*packet*/)
@@ -1354,13 +1490,122 @@ void BasicWifiAdhoc::swarmMsgReceiverClbk(std::string context, Ptr<const Packet>
     }
     wrapper.set_dst_id(static_cast<uint32_t>(racer_rx_id));
 
+    if (ShouldTraceSwarmWrapper_(wrapper))
+    {
+        TraceSwarmWrapper_(
+            "net_rx_from_ns3",
+            wrapper,
+            "platform_rx_id=" + std::to_string(rx_agent_id) +
+                " platform_tx_id=" + std::to_string(tx_agent_id) +
+                " flow_id=" + std::to_string(swarm_hdr.GetFlowId()) +
+                " seq=" + std::to_string(swarm_hdr.GetSeq()) +
+                " delay_us=" + std::to_string(delay_us));
+    }
+
     std::string delivered_bytes;
     if (!wrapper.SerializeToString(&delivered_bytes))
     {
         ROS_WARN_THROTTLE(1.0, "[NET] failed to serialize delivered RacerSwarmMsg.");
         return;
     }
-    pending_swarm_rx_bytes_.push_back(delivered_bytes);
+
+    int32_t rssi_x10 = 0;
+    if (has_rx_dbm_for_event && std::isfinite(rx_dbm_for_event))
+    {
+        rssi_x10 = static_cast<int32_t>(std::llround(rx_dbm_for_event * 10.0));
+    }
+
+    DeliveredSwarmPacketRow delivered;
+    delivered.meta.rx_time_us = now_us;
+    delivered.meta.rx_id = rx_agent_id;
+    delivered.meta.tx_time_us = tx_us;
+    delivered.meta.tx_id = tx_agent_id;
+    delivered.meta.hdr_sender_id = swarm_hdr.GetSenderId();
+    delivered.meta.flow_id = swarm_hdr.GetFlowId();
+    delivered.meta.seq = swarm_hdr.GetSeq();
+    delivered.meta.pkt_bytes = packet->GetSize();
+    delivered.meta.delay_us = delay_us;
+    delivered.meta.rx_power_dbm = rx_dbm_for_event;
+    delivered.meta.has_rx_power = has_rx_dbm_for_event;
+    delivered.meta.is_duplicate = is_dup;
+    delivered.meta.has_packet_state = txMob != nullptr;
+    if (txMob)
+    {
+        const Vector pos = txMob->GetPosition();
+        const Vector vel = txMob->GetVelocity();
+        delivered.meta.pos_x = pos.x;
+        delivered.meta.pos_y = pos.y;
+        delivered.meta.pos_z = pos.z;
+        delivered.meta.vel_x = vel.x;
+        delivered.meta.vel_y = vel.y;
+        delivered.meta.vel_z = vel.z;
+    }
+    delivered.rssi_dbm_x10 = rssi_x10;
+    delivered.wrapped_msg = std::move(delivered_bytes);
+
+    if (ShouldTraceSwarmWrapper_(wrapper))
+    {
+        TraceSwarmWrapper_(
+            "net_rx_batch_queue",
+            wrapper,
+            "window_pending_packets=" +
+                std::to_string(delivered_swarm_packets_window_.size() + 1));
+    }
+
+    delivered_swarm_packets_window_.push_back(std::move(delivered));
+}
+
+bool BasicWifiAdhoc::ShouldTraceSwarmWrapper_(
+    const relay_racer_proto::RacerSwarmMsg& wrapper) const
+{
+    if (!trace_swarm_msg_enable_)
+    {
+        return false;
+    }
+    if (!trace_swarm_msg_family_.empty() && wrapper.family() != trace_swarm_msg_family_)
+    {
+        return false;
+    }
+    if (trace_swarm_msg_src_id_ > 0 &&
+        static_cast<int>(wrapper.src_id()) != trace_swarm_msg_src_id_)
+    {
+        return false;
+    }
+    if (trace_swarm_msg_bridge_seq_ >= 0 &&
+        wrapper.bridge_seq() != static_cast<uint64_t>(trace_swarm_msg_bridge_seq_))
+    {
+        return false;
+    }
+    return true;
+}
+
+void BasicWifiAdhoc::TraceSwarmWrapper_(
+    const char* stage,
+    const relay_racer_proto::RacerSwarmMsg& wrapper,
+    const std::string& extra) const
+{
+    if (extra.empty())
+    {
+        ROS_INFO_STREAM("[SWARM_TRACE][" << stage << "] family=" << wrapper.family()
+                        << " src_id=" << wrapper.src_id()
+                        << " dst_id=" << wrapper.dst_id()
+                        << " bridge_seq=" << wrapper.bridge_seq()
+                        << " network_tx_id=" << wrapper.network_tx_id()
+                        << " relay_hop_count=" << wrapper.relay_hop_count()
+                        << " max_relay_hops=" << wrapper.max_relay_hops()
+                        << " payload_bytes=" << wrapper.ros_payload().size());
+        return;
+    }
+
+    ROS_INFO_STREAM("[SWARM_TRACE][" << stage << "] family=" << wrapper.family()
+                    << " src_id=" << wrapper.src_id()
+                    << " dst_id=" << wrapper.dst_id()
+                    << " bridge_seq=" << wrapper.bridge_seq()
+                    << " network_tx_id=" << wrapper.network_tx_id()
+                    << " relay_hop_count=" << wrapper.relay_hop_count()
+                    << " max_relay_hops=" << wrapper.max_relay_hops()
+                    << " payload_bytes=" << wrapper.ros_payload().size()
+                    << " " << extra);
 }
 
 // ---- Per-node stats storage helpers ----
@@ -1613,6 +1858,7 @@ void BasicWifiAdhoc::ResetWindowAccumulators_()
     std::fill(node_rx_power_max_dbm_.begin(), node_rx_power_max_dbm_.end(), -std::numeric_limits<double>::infinity());
 
     rx_events_window_.clear();
+    delivered_swarm_packets_window_.clear();
 }
 
 bool BasicWifiAdhoc::hasFreshRealAgentStates_() const

@@ -58,6 +58,7 @@ private:
   int getId();
   bool handleRemoteMapUpdate(const ros::Time& now);
   void findUnallocated(const vector<int>& actives, vector<int>& missed);
+  void recoverAssignmentAfterRelayExit(const string& reason);
   void requestAggressiveReassign(const string& reason);
   bool tryClaimUnallocatedGrids(const string& pos_call, bool require_empty_assignment);
   bool tryStartExploration(const string& pos_call, bool finish_if_no_frontier);

@@ -7,6 +7,7 @@
 
 #include <protobuf_msgs/racer_swarm_msg.pb.h>
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
@@ -21,6 +22,10 @@ class RacerMsgTxBridgeNode {
     pnh_.param("default_max_relay_hops", default_max_relay_hops_, 1);
     pnh_.param<std::string>("tx_topic", tx_topic_,
                             std::string("/relay_integration/racer_swarm_tx_bytes"));
+    pnh_.param("trace_swarm_msg_enable", trace_swarm_msg_enable_, false);
+    pnh_.param<std::string>("trace_swarm_msg_family", trace_swarm_msg_family_, std::string());
+    pnh_.param("trace_swarm_msg_src_id", trace_swarm_msg_src_id_, -1);
+    pnh_.param("trace_swarm_msg_bridge_seq", trace_swarm_msg_bridge_seq_, -1);
     loadDroneIds();
     loadFamilies();
 
@@ -96,6 +101,10 @@ class RacerMsgTxBridgeNode {
     wrapper.set_relay_hop_count(0);
     wrapper.set_max_relay_hops(static_cast<uint32_t>(std::max(0, default_max_relay_hops_)));
 
+    if (shouldTrace(wrapper)) {
+      traceWrapper("tx_bridge_wrap", wrapper);
+    }
+
     std::string bytes;
     if (!wrapper.SerializeToString(&bytes)) {
       ROS_WARN_THROTTLE(1.0, "Failed to serialize RacerSwarmMsg for family=%s src=%d",
@@ -116,6 +125,38 @@ class RacerMsgTxBridgeNode {
     return current;
   }
 
+  bool shouldTrace(const relay_racer_proto::RacerSwarmMsg& wrapper) const {
+    if (!trace_swarm_msg_enable_) {
+      return false;
+    }
+    if (!trace_swarm_msg_family_.empty() && wrapper.family() != trace_swarm_msg_family_) {
+      return false;
+    }
+    if (trace_swarm_msg_src_id_ > 0 &&
+        static_cast<int>(wrapper.src_id()) != trace_swarm_msg_src_id_) {
+      return false;
+    }
+    if (trace_swarm_msg_bridge_seq_ >= 0 &&
+        wrapper.bridge_seq() != static_cast<uint64_t>(trace_swarm_msg_bridge_seq_)) {
+      return false;
+    }
+    return true;
+  }
+
+  void traceWrapper(const char* stage,
+                    const relay_racer_proto::RacerSwarmMsg& wrapper) const {
+    ROS_INFO_STREAM("[SWARM_TRACE][" << stage << "] family=" << wrapper.family()
+                    << " src_id=" << wrapper.src_id()
+                    << " dst_id=" << wrapper.dst_id()
+                    << " bridge_seq=" << wrapper.bridge_seq()
+                    << " network_tx_id=" << wrapper.network_tx_id()
+                    << " relay_hop_count=" << wrapper.relay_hop_count()
+                    << " max_relay_hops=" << wrapper.max_relay_hops()
+                    << " ros_datatype=" << wrapper.ros_datatype()
+                    << " payload_bytes=" << wrapper.ros_payload().size()
+                    << " stamp_us=" << wrapper.stamp_us());
+  }
+
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Publisher tx_pub_;
@@ -125,6 +166,10 @@ class RacerMsgTxBridgeNode {
   std::map<std::pair<std::string, int>, uint64_t> next_seq_;
   int queue_size_{50};
   int default_max_relay_hops_{1};
+  bool trace_swarm_msg_enable_{false};
+  std::string trace_swarm_msg_family_;
+  int trace_swarm_msg_src_id_{-1};
+  int trace_swarm_msg_bridge_seq_{-1};
   std::string tx_topic_;
 };
 

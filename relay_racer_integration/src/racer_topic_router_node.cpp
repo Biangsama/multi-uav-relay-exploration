@@ -37,8 +37,14 @@ public:
     registerFamily("pair_opt", "/swarm_expl/pair_opt");
     registerFamily("pair_opt_res", "/swarm_expl/pair_opt_res");
     registerFamily("swarm_traj", "/planning/swarm_traj");
+    registerFamily("chunk_stamps", "/multi_map_manager/chunk_stamps");
+    registerFamily("chunk_data", "/multi_map_manager/chunk_data");
+    registerFamily("relay_peer_state", "/relay_integration/relay_peer_state");
+    registerFamily("relay_proposal", "/relay_integration/relay_proposal");
+    registerFamily("relay_task_state", "/relay_integration/relay_task_state");
 
-    // TODO(stage-2): route chunk_stamps_* and chunk_data_* with the same gating logic.
+    ROS_WARN("[LOCAL_ROUTER] enabled local topic routing bypass. This path does not model the "
+             "coordinator/PHY delayed-delivery transport and should only be used as a fallback.");
   }
 
 private:

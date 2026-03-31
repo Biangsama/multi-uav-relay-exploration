@@ -36,7 +36,7 @@ net_log_per_packet: false
 net_metrics_dir: logs
 net_metrics_flush_every_n: 20
 net_metrics_mode: per_link
-net_step_size: 100000
+net_step_size: 4000
 net_uds_server_address: /tmp/relay_task_small_net.sock
 net_use_uds: true
 phy_inject_delay_enable: false
@@ -47,7 +47,7 @@ phy_inject_delay_scale: 1.0
 phy_inject_queue_max_len: 8
 phy_ip_server_address: 127.0.0.1
 phy_ip_server_port: 10000
-phy_step_size: 10000
+phy_step_size: 4000
 phy_uds_server_address: /tmp/relay_task_small_phy.sock
 phy_use_uds: true
 phy_use_vat_service_cmd: false
@@ -62,7 +62,7 @@ save_compute_time: false
 seed: 42
 short_guard_interval_supported: false
 simulation_length: 80
-sync_window: 100000
+sync_window: 4000
 verbose: true
 wifi_phy_mode: HeMcs4
 wifi_standard: 802.11ax

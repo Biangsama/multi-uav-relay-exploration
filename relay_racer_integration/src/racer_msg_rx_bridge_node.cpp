@@ -6,6 +6,7 @@
 
 #include <protobuf_msgs/racer_swarm_msg.pb.h>
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,10 @@ class RacerMsgRxBridgeNode {
     pnh_.param("dedupe_ttl_sec", dedupe_ttl_sec_, 15.0);
     pnh_.param<std::string>("rx_topic", rx_topic_,
                             std::string("/relay_integration/racer_swarm_rx_bytes"));
+    pnh_.param("trace_swarm_msg_enable", trace_swarm_msg_enable_, false);
+    pnh_.param<std::string>("trace_swarm_msg_family", trace_swarm_msg_family_, std::string());
+    pnh_.param("trace_swarm_msg_src_id", trace_swarm_msg_src_id_, -1);
+    pnh_.param("trace_swarm_msg_bridge_seq", trace_swarm_msg_bridge_seq_, -1);
     loadDroneIds();
     loadFamilies();
 
@@ -71,18 +76,30 @@ class RacerMsgRxBridgeNode {
       return;
     }
 
+    if (shouldTrace(wrapper)) {
+      traceWrapper("rx_bridge_bytes", wrapper,
+                   "rx_wrapper_msgs=" + std::to_string(rx_wrapper_msgs_));
+    }
+
     const auto family_it = families_.find(wrapper.family());
     if (family_it == families_.end()) {
       ROS_WARN_THROTTLE(1.0, "Unknown RacerSwarmMsg family=%s", wrapper.family().c_str());
       return;
     }
     if (wrapper.dst_id() == 0) {
+      if (shouldTrace(wrapper)) {
+        traceWrapper("rx_bridge_drop_unresolved", wrapper);
+      }
       ROS_WARN_THROTTLE(1.0, "Dropping RacerSwarmMsg family=%s with unresolved dst_id=0",
                         wrapper.family().c_str());
       return;
     }
     if (isDuplicateAndUpdate(wrapper)) {
       ++deduped_msgs_;
+      if (shouldTrace(wrapper)) {
+        traceWrapper("rx_bridge_drop_duplicate", wrapper,
+                     "deduped_msgs=" + std::to_string(deduped_msgs_));
+      }
       ROS_INFO_STREAM_THROTTLE(1.0,
                                "[RX_BRIDGE] dropping duplicate wrapper family=" << wrapper.family()
                                << " src_id=" << wrapper.src_id()
@@ -111,6 +128,11 @@ class RacerMsgRxBridgeNode {
     pub.publish(shifter);
     ++published_msgs_;
     ++published_per_topic_[output_topic];
+    if (shouldTrace(wrapper)) {
+      traceWrapper("rx_bridge_publish", wrapper,
+                   "topic=" + output_topic +
+                       " topic_count=" + std::to_string(published_per_topic_[output_topic]));
+    }
     ROS_INFO_STREAM_THROTTLE(1.0,
                              "[RX_BRIDGE] wrapper msgs=" << rx_wrapper_msgs_
                              << " published msgs=" << published_msgs_
@@ -154,6 +176,50 @@ class RacerMsgRxBridgeNode {
     last_prune_us_ = now_us;
   }
 
+  bool shouldTrace(const relay_racer_proto::RacerSwarmMsg& wrapper) const {
+    if (!trace_swarm_msg_enable_) {
+      return false;
+    }
+    if (!trace_swarm_msg_family_.empty() && wrapper.family() != trace_swarm_msg_family_) {
+      return false;
+    }
+    if (trace_swarm_msg_src_id_ > 0 &&
+        static_cast<int>(wrapper.src_id()) != trace_swarm_msg_src_id_) {
+      return false;
+    }
+    if (trace_swarm_msg_bridge_seq_ >= 0 &&
+        wrapper.bridge_seq() != static_cast<uint64_t>(trace_swarm_msg_bridge_seq_)) {
+      return false;
+    }
+    return true;
+  }
+
+  void traceWrapper(const char* stage,
+                    const relay_racer_proto::RacerSwarmMsg& wrapper,
+                    const std::string& extra = std::string()) const {
+    if (extra.empty()) {
+      ROS_INFO_STREAM("[SWARM_TRACE][" << stage << "] family=" << wrapper.family()
+                      << " src_id=" << wrapper.src_id()
+                      << " dst_id=" << wrapper.dst_id()
+                      << " bridge_seq=" << wrapper.bridge_seq()
+                      << " network_tx_id=" << wrapper.network_tx_id()
+                      << " relay_hop_count=" << wrapper.relay_hop_count()
+                      << " max_relay_hops=" << wrapper.max_relay_hops()
+                      << " payload_bytes=" << wrapper.ros_payload().size());
+      return;
+    }
+
+    ROS_INFO_STREAM("[SWARM_TRACE][" << stage << "] family=" << wrapper.family()
+                    << " src_id=" << wrapper.src_id()
+                    << " dst_id=" << wrapper.dst_id()
+                    << " bridge_seq=" << wrapper.bridge_seq()
+                    << " network_tx_id=" << wrapper.network_tx_id()
+                    << " relay_hop_count=" << wrapper.relay_hop_count()
+                    << " max_relay_hops=" << wrapper.max_relay_hops()
+                    << " payload_bytes=" << wrapper.ros_payload().size()
+                    << " " << extra);
+  }
+
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber sub_;
@@ -166,6 +232,10 @@ class RacerMsgRxBridgeNode {
   uint64_t published_msgs_{0};
   uint64_t deduped_msgs_{0};
   double dedupe_ttl_sec_{15.0};
+  bool trace_swarm_msg_enable_{false};
+  std::string trace_swarm_msg_family_;
+  int trace_swarm_msg_src_id_{-1};
+  int trace_swarm_msg_bridge_seq_{-1};
   uint64_t last_prune_us_{0};
   std::unordered_map<std::string, uint64_t> delivered_cache_us_;
   std::string rx_topic_;

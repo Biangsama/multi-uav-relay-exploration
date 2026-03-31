@@ -20,6 +20,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <unordered_set>
 
 using Eigen::Vector4d;
 
@@ -917,10 +918,9 @@ void FastExplorationFSM::relayRoleCmdCallback(
       current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY;
 
   if (entering_relay) {
-    ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, releasing "
+    ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, keeping "
                                       << self_state.grid_ids_.size()
-                                      << " grids and replanning immediately.");
-    self_state.grid_ids_.clear();
+                                      << " previous grids available for handoff and replanning immediately.");
     self_state.recent_attempt_time_ = ros::Time::now().toSec();
     expl_manager_->ed_->last_grid_ids_.clear();
     expl_manager_->ed_->reallocated_ = true;
@@ -940,7 +940,7 @@ void FastExplorationFSM::relayRoleCmdCallback(
       transitState(PLAN_TRAJ, "relayRoleCmdCallback");
     }
   } else if (leaving_relay) {
-    requestAggressiveReassign("relayRoleCmdCallback");
+    recoverAssignmentAfterRelayExit("relayRoleCmdCallback");
   }
 }
 
@@ -1271,6 +1271,83 @@ void FastExplorationFSM::findUnallocated(const vector<int>& actives, vector<int>
   missed.clear();
   for (auto p : active_map) {
     missed.push_back(p.first);
+  }
+}
+
+void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
+  if (!fd_->have_odom_ || current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
+    return;
+  }
+
+  auto& states = expl_manager_->ed_->swarm_state_;
+  auto& self_state = states[getId() - 1];
+  const ros::Time now = ros::Time::now();
+  const double now_sec = now.toSec();
+
+  self_state.pos_ = fd_->odom_pos_;
+  self_state.vel_ = fd_->odom_vel_;
+  self_state.yaw_ = fd_->odom_yaw_;
+  self_state.stamp_ = now_sec;
+  self_state.relay_role_ = current_role_;
+  self_state.task_assignable_ = true;
+
+  std::unordered_set<int> claimed_by_peers;
+  for (int i = 0; i < states.size(); ++i) {
+    const int agent_id = i + 1;
+    if (agent_id == getId()) continue;
+    const auto& peer = states[i];
+    if (!peer.task_assignable_) continue;
+    if (now_sec - peer.stamp_ > kPeerStateFreshnessSec) continue;
+    for (const int grid_id : peer.grid_ids_) {
+      claimed_by_peers.insert(grid_id);
+    }
+  }
+
+  vector<int> recovered_grid_ids;
+  recovered_grid_ids.reserve(self_state.grid_ids_.size());
+  size_t handed_off_grid_count = 0;
+  for (const int grid_id : self_state.grid_ids_) {
+    if (claimed_by_peers.find(grid_id) != claimed_by_peers.end()) {
+      ++handed_off_grid_count;
+      continue;
+    }
+    recovered_grid_ids.push_back(grid_id);
+  }
+
+  self_state.grid_ids_ = recovered_grid_ids;
+  self_state.recent_attempt_time_ = now_sec;
+  expl_manager_->ed_->last_grid_ids_.clear();
+  expl_manager_->ed_->reallocated_ = true;
+  expl_manager_->ed_->wait_response_ = false;
+  fd_->go_back_ = false;
+  fd_->avoid_collision_ = false;
+  fd_->static_state_ = true;
+  fd_->last_check_frontier_time_ = now;
+  fd_->consecutive_plan_failures_ = 0;
+
+  ROS_WARN_STREAM("[Relay]: Drone " << getId() << " leaving relay mode with "
+                  << self_state.grid_ids_.size() << " grids recovered and "
+                  << handed_off_grid_count << " already handed off.");
+
+  if (!self_state.grid_ids_.empty()) {
+    if (state_ == WAIT_TRIGGER && fd_->have_odom_) {
+      fd_->trigger_ = true;
+      fd_->start_pos_ = fd_->odom_pos_;
+      transitState(PLAN_TRAJ, reason);
+    } else if (state_ != INIT && state_ != FINISH && state_ != PLAN_TRAJ) {
+      replan_pub_.publish(std_msgs::Empty());
+      transitState(PLAN_TRAJ, reason);
+    }
+    return;
+  }
+
+  fd_->aggressive_reassign_requested_ = true;
+  if (tryClaimUnallocatedGrids(reason, true)) {
+    return;
+  }
+
+  if (state_ != INIT && state_ != IDLE) {
+    transitState(IDLE, reason);
   }
 }
 
