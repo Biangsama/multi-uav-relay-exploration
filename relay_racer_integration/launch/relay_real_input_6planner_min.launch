@@ -39,6 +39,11 @@
   <arg name="distributed_local_relay_controller" default="true"/>
   <arg name="platform_output" default="log"/>
   <arg name="comm_output" default="screen"/>
+  <arg name="planner_show_all_map" default="false"/>
+  <arg name="planner_enable_heavy_markers" default="false"/>
+  <arg name="sim_enable_odom_visualization" default="true"/>
+  <arg name="sim_sensing_rate" default="6.0"/>
+  <arg name="sim_estimation_rate" default="6.0"/>
   <arg name="monitor_report_path" default=""/>
   <arg name="monitor_summary_period" default="5.0"/>
   <arg name="monitor_metric_sample_period" default="0.5"/>
@@ -350,6 +355,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -385,6 +392,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_1"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
 
     <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
@@ -406,6 +416,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -441,6 +453,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_2"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
 
     <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
@@ -462,6 +477,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -497,6 +514,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_3"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
 
     <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
@@ -518,6 +538,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -553,6 +575,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_4"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
 
     <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
@@ -574,6 +599,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -609,6 +636,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_5"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
 
     <include file="$(find exploration_manager)/launch/single_drone_planner_realworld.xml">
@@ -630,6 +660,8 @@
       <arg name="simulation" value="true"/>
       <arg name="single_expo" value="false"/>
       <arg name="fsm_auto_start" value="$(arg planner_auto_start)"/>
+      <arg name="planner_show_all_map" value="$(arg planner_show_all_map)"/>
+      <arg name="planner_enable_heavy_markers" value="$(arg planner_enable_heavy_markers)"/>
       <arg name="box_min_x" value="$(arg box_min_x)"/>
       <arg name="box_min_y" value="$(arg box_min_y)"/>
       <arg name="box_min_z" value="$(arg box_min_z)"/>
@@ -665,6 +697,9 @@
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
       <arg name="odometry_topic" value="/relay_odom_6"/>
+      <arg name="enable_odom_visualization" value="$(arg sim_enable_odom_visualization)"/>
+      <arg name="sensing_rate" value="$(arg sim_sensing_rate)"/>
+      <arg name="estimation_rate" value="$(arg sim_estimation_rate)"/>
     </include>
   </group>
 

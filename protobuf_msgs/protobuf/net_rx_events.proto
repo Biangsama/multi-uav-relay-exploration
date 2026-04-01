@@ -41,3 +41,17 @@ message NetRxEventsPayload {
   uint64 t_window_end_us   = 2; // 窗口结束（可选）
   repeated RxEvent events  = 3; // 按包记录的事件列表
 }
+
+// 用于真实链路回放的“带包体接收事件”。
+// 语义：NET 已经决定该包在 meta.rx_time_us 被 meta.dst_id 收到；
+// PHY 侧只需要按时间释放 wrapped_msg。
+message DeliveredSwarmPacket {
+  RxEvent meta = 1;
+  bytes wrapped_msg = 2; // 完整 RacerSwarmMsg bytes
+}
+
+message DeliveredSwarmPacketBatch {
+  uint64 t_window_start_us = 1;
+  uint64 t_window_end_us   = 2;
+  repeated DeliveredSwarmPacket packets = 3;
+}

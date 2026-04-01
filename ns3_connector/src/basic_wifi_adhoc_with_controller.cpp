@@ -371,59 +371,57 @@ private:
         const uint64_t win_start_us = (t_sim_us > win_dur_us) ? (t_sim_us - win_dur_us) : 0;
 
         // Preserve the legacy packet-event batch for metrics/diagnostics consumers.
-        if (!rx_events_window_.empty())
+        // Always publish the current window snapshot, even when it contains zero events.
+        protobuf_msgs::NetRxEventsPayload evp;
+        evp.set_t_window_start_us(win_start_us);
+        evp.set_t_window_end_us(t_sim_us);
+
+        for (const auto& e : rx_events_window_)
         {
-            protobuf_msgs::NetRxEventsPayload evp;
-            evp.set_t_window_start_us(win_start_us);
-            evp.set_t_window_end_us(t_sim_us);
+            auto* ev = evp.add_events();
 
-            for (const auto& e : rx_events_window_)
+            uint32_t src_id = (e.hdr_sender_id != 0) ? e.hdr_sender_id : e.tx_id;
+            ev->set_src_id(src_id);
+            ev->set_dst_id(e.rx_id);
+            ev->set_flow_id(e.flow_id);
+            ev->set_seq(e.seq);
+            ev->set_tx_time_us(e.tx_time_us);
+            ev->set_rx_time_us(e.rx_time_us);
+            ev->set_delay_us(e.delay_us);
+            ev->set_payload_bytes(e.pkt_bytes);
+
+            int32_t rssi_x10 = 0;
+            if (e.has_rx_power && std::isfinite(e.rx_power_dbm))
             {
-                auto* ev = evp.add_events();
-
-                uint32_t src_id = (e.hdr_sender_id != 0) ? e.hdr_sender_id : e.tx_id;
-                ev->set_src_id(src_id);
-                ev->set_dst_id(e.rx_id);
-                ev->set_flow_id(e.flow_id);
-                ev->set_seq(e.seq);
-                ev->set_tx_time_us(e.tx_time_us);
-                ev->set_rx_time_us(e.rx_time_us);
-                ev->set_delay_us(e.delay_us);
-                ev->set_payload_bytes(e.pkt_bytes);
-
-                int32_t rssi_x10 = 0;
-                if (e.has_rx_power && std::isfinite(e.rx_power_dbm))
-                {
-                    rssi_x10 = (int32_t)std::llround(e.rx_power_dbm * 10.0);
-                }
-                ev->set_rssi_dbm_x10(rssi_x10);
-                ev->set_is_duplicate(e.is_duplicate);
-                ev->set_has_packet_state(e.has_packet_state);
-                ev->set_pos_x(e.pos_x);
-                ev->set_pos_y(e.pos_y);
-                ev->set_pos_z(e.pos_z);
-                ev->set_vel_x(e.vel_x);
-                ev->set_vel_y(e.vel_y);
-                ev->set_vel_z(e.vel_z);
+                rssi_x10 = (int32_t)std::llround(e.rx_power_dbm * 10.0);
             }
+            ev->set_rssi_dbm_x10(rssi_x10);
+            ev->set_is_duplicate(e.is_duplicate);
+            ev->set_has_packet_state(e.has_packet_state);
+            ev->set_pos_x(e.pos_x);
+            ev->set_pos_y(e.pos_y);
+            ev->set_pos_z(e.pos_z);
+            ev->set_vel_x(e.vel_x);
+            ev->set_vel_y(e.vel_y);
+            ev->set_vel_z(e.vel_z);
+        }
 
-            std::string ev_raw;
-            evp.SerializeToString(&ev_raw);
-            {
-                std::lock_guard<std::mutex> lk(latest_comm_rx_events_mu_);
-                latest_comm_rx_events_raw_ = ev_raw;
-            }
-            response_msg.set_net_rx_events_gz(gzip_compress(ev_raw));
+        std::string ev_raw;
+        evp.SerializeToString(&ev_raw);
+        {
+            std::lock_guard<std::mutex> lk(latest_comm_rx_events_mu_);
+            latest_comm_rx_events_raw_ = ev_raw;
+        }
+        response_msg.set_net_rx_events_gz(gzip_compress(ev_raw));
 
-            if (verbose_)
-            {
-                RCLCPP_INFO(this->get_logger(),
-                            "[NET] net_rx_events_gz sent win=%lu events=%zu raw=%zuB gz=%zuB",
-                            (unsigned long)window_idx_,
-                            rx_events_window_.size(),
-                            ev_raw.size(),
-                            response_msg.net_rx_events_gz().size());
-            }
+        if (verbose_)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "[NET] net_rx_events_gz sent win=%lu events=%zu raw=%zuB gz=%zuB",
+                        (unsigned long)window_idx_,
+                        rx_events_window_.size(),
+                        ev_raw.size(),
+                        response_msg.net_rx_events_gz().size());
         }
 
         if (!delivered_swarm_packets_window_.empty())

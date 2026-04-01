@@ -50,6 +50,8 @@ private:
   int last_bspline_phase1_num_;
   int last_bspline_phase2_num_;
   int last_frontier_num_;
+  bool enable_all_markers_;
+  bool enable_heavy_markers_;
 
 public:
   PlanningVisualization(/* args */) {

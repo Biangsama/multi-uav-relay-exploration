@@ -105,6 +105,7 @@ private:
   bool have_relay_target_;
   Vector3d relay_target_;
   double relay_yaw_;
+  vector<int> relay_suspended_grid_ids_;
 };
 
 }  // namespace fast_planner

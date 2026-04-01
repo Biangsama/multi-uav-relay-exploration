@@ -6,12 +6,15 @@
   <!-- Initial position of the drone -->
   <arg name="init_x"/>
   <arg name="init_y"/>
-  <arg name="init_z"/> 
+  <arg name="init_z"/>
   <!-- Size of the flight environment -->
   <arg name="map_size_x"/>
   <arg name="map_size_y"/>
   <arg name="map_size_z"/>
   <arg name="odometry_topic" />
+  <arg name="enable_odom_visualization" default="true"/>
+  <arg name="sensing_rate" default="10.0"/>
+  <arg name="estimation_rate" default="10.0"/>
 
   <!-- Physical simulator (so3 simulator, disturbance generator and controller) is replaced by light weight cmd2odom -->
   <node pkg="poscmd_2_odom" name="poscmd_2_odom_$(arg drone_id)" type="poscmd_2_odom" output="screen" respawn="true" respawn_delay="1.0">
@@ -22,17 +25,17 @@
       <remap from="~command" to="/planning/pos_cmd_$(arg drone_id)"/>
       <remap from="~odometry" to="$(arg odometry_topic)"/>
   </node>
-                                                                                                                                                                                                                                                                                                    
-  <node pkg="odom_visualization" name="odom_visualization_$(arg drone_id)" type="odom_visualization" output="screen">
+
+  <node if="$(arg enable_odom_visualization)" pkg="odom_visualization" name="odom_visualization_$(arg drone_id)" type="odom_visualization" output="screen">
       <remap from="~odom" to="$(arg odometry_topic)"/>
       <remap from="~robot" to="/odom_visualization_$(arg drone_id)/robot"/>
-      <param name="drone_id" value="$(arg drone_id)"/>    
-      <param name="drone_num" value="$(arg drone_num)"/>    
-      <param name="color/a" value="1.0"/>    
-      <param name="color/r" value="0.0"/>        
-      <param name="color/g" value="0.0"/>        
-      <param name="color/b" value="1.0"/>       
-      <param name="covariance_scale" value="100.0"/>       
+      <param name="drone_id" value="$(arg drone_id)"/>
+      <param name="drone_num" value="$(arg drone_num)"/>
+      <param name="color/a" value="1.0"/>
+      <param name="color/r" value="0.0"/>
+      <param name="color/g" value="0.0"/>
+      <param name="color/b" value="1.0"/>
+      <param name="covariance_scale" value="100.0"/>
       <param name="robot_scale" value="1.0"/>
   </node>
 
@@ -40,8 +43,8 @@
       <rosparam command="load" file="$(find local_sensing_node)/params/camera.yaml" />
 
       <param name="sensing_horizon"  value="5.0" />
-      <param name="sensing_rate"     value="10.0"/>
-      <param name="estimation_rate"  value="10.0"/>
+      <param name="sensing_rate"     value="$(arg sensing_rate)"/>
+      <param name="estimation_rate"  value="$(arg estimation_rate)"/>
       <param name="map/x_size"     value="$(arg map_size_x)"/>
       <param name="map/y_size"     value="$(arg map_size_y)"/>
       <param name="map/z_size"     value="$(arg map_size_z)"/>

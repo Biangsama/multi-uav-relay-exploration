@@ -21,6 +21,8 @@
   <arg name="fsm_auto_start" default="true"/>
   <arg name="fsm_auto_start_retry_interval" default="0.5"/>
   <arg name="fsm_remote_map_replan_interval" default="1.0"/>
+  <arg name="planner_show_all_map" default="true"/>
+  <arg name="planner_enable_heavy_markers" default="true"/>
   <arg name="box_min_x" default="-7.0"/>
   <arg name="box_min_y" default="-15.0"/>
   <arg name="box_min_z" default="0.0"/>
@@ -31,7 +33,7 @@
   <!-- main node -->
   <node pkg="exploration_manager" name="exploration_node_$(arg drone_id)" type="exploration_node" output="screen">
     <remap from ="/odom_world" to="$(arg odometry_topic)"/>
-    <remap from ="/map_ros/pose"   to = "$(arg sensor_pose_topic)"/> 
+    <remap from ="/map_ros/pose"   to = "$(arg sensor_pose_topic)"/>
     <remap from ="/map_ros/depth" to = "$(arg depth_topic)"/>
     <remap from ="/map_ros/cloud" to="$(arg cloud_topic)"/>
 
@@ -66,19 +68,19 @@
     <remap from="/sdf_map/update_range" to="/sdf_map/update_range_$(arg drone_id)" />
     <remap from="/sdf_map/basecoor" to="/swarm_sim_tf/basecoor_$(arg drone_id)" if="$(arg simulation)"/>
     <remap from="/sdf_map/basecoor" to="/swarm_drones/swarm_drone_basecoor" unless="$(arg simulation)"/>
-    
 
-    <param name="sdf_map/resolution"      value="0.1" /> 
-    <param name="sdf_map/map_size_x"   value="$(arg map_size_x)" /> 
-    <param name="sdf_map/map_size_y"   value="$(arg map_size_y)" /> 
-    <param name="sdf_map/map_size_z"   value="$(arg map_size_z)" /> 
-    <param name="sdf_map/obstacles_inflation"     value="0.199" /> 
+
+    <param name="sdf_map/resolution"      value="0.1" />
+    <param name="sdf_map/map_size_x"   value="$(arg map_size_x)" />
+    <param name="sdf_map/map_size_y"   value="$(arg map_size_y)" />
+    <param name="sdf_map/map_size_z"   value="$(arg map_size_z)" />
+    <param name="sdf_map/obstacles_inflation"     value="0.199" />
     <!-- <param name="sdf_map/obstacles_inflation"     value="0.0" />  -->
     <param name="sdf_map/local_bound_inflate"    value="0.5"/>
     <param name="sdf_map/local_map_margin" value="50"/>
     <param name="sdf_map/ground_height"        value="-1.0"/>
     <param name="sdf_map/default_dist"        value="0.5"/>
-    
+
     <param name="sdf_map/p_hit"  value="0.65"/>
     <param name="sdf_map/p_miss" value="0.35"/>
     <param name="sdf_map/p_min"  value="0.12"/>
@@ -111,8 +113,10 @@
     <param name="map_ros/visualization_truncate_low"   value="-2.0"/>
     <param name="map_ros/show_occ_time"  value="false"/>
     <param name="map_ros/show_esdf_time" value="false"/>
-    <param name="map_ros/show_all_map" value="true"/>
+    <param name="map_ros/show_all_map" value="$(arg planner_show_all_map)"/>
     <param name="map_ros/frame_id"      value="world"/>
+    <param name="planning_visualization/enable" value="true" type="bool"/>
+    <param name="planning_visualization/enable_heavy_markers" value="$(arg planner_enable_heavy_markers)" type="bool"/>
 
     <!-- Fsm -->
     <param name="fsm/thresh_replan1" value="0.2" type="double"/>
@@ -272,7 +276,7 @@
     <param name="exploration/drone_id" value="$(arg drone_id)" type="int"/>
     <param name="exploration/tsp_dir"  value="$(find lkh_tsp_solver)/resource" type="string"/>
   </node> -->
-  
+
   <node pkg="lkh_mtsp_solver" name="tsp_solver_$(arg drone_id)" type="mtsp_node" output="log">
     <param name="exploration/drone_id" value="$(arg drone_id)" type="int"/>
     <param name="exploration/mtsp_dir" value="$(find lkh_mtsp_solver)/resource" type="string"/>

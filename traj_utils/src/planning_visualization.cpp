@@ -5,6 +5,8 @@ using std::endl;
 namespace fast_planner {
 PlanningVisualization::PlanningVisualization(ros::NodeHandle& nh) {
   node = nh;
+  node.param("planning_visualization/enable", enable_all_markers_, true);
+  node.param("planning_visualization/enable_heavy_markers", enable_heavy_markers_, true);
 
   traj_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/trajectory", 100);
   pubs_.push_back(traj_pub_);
@@ -20,13 +22,13 @@ PlanningVisualization::PlanningVisualization(ros::NodeHandle& nh) {
       100);
   pubs_.push_back(visib_pub_);
 
-  frontier_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/frontier", 10000);
+  frontier_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/frontier", 200);
   pubs_.push_back(frontier_pub_);
 
   yaw_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/yaw", 100);
   pubs_.push_back(yaw_pub_);
 
-  viewpoint_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/viewpoints", 1000);
+  viewpoint_pub_ = node.advertise<visualization_msgs::Marker>("/planning_vis/viewpoints", 100);
   pubs_.push_back(viewpoint_pub_);
 
   last_topo_path1_num_ = 0;
@@ -386,6 +388,7 @@ void PlanningVisualization::drawBspline(NonUniformBspline& bspline, double size,
 void PlanningVisualization::drawTopoGraph(list<GraphNode::Ptr>& graph, double point_size,
     double line_width, const Eigen::Vector4d& color1, const Eigen::Vector4d& color2,
     const Eigen::Vector4d& color3, int id) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   // clear exsiting node and edge (drawn last time)
   vector<Eigen::Vector3d> empty;
   displaySphereList(empty, point_size, color1, GRAPH_NODE, 1);
@@ -417,6 +420,7 @@ void PlanningVisualization::drawTopoGraph(list<GraphNode::Ptr>& graph, double po
 
 void PlanningVisualization::drawTopoPathsPhase2(
     vector<vector<Eigen::Vector3d>>& paths, double line_width) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   // clear drawn paths
   Eigen::Vector4d color1(1, 1, 1, 1);
   for (int i = 0; i < last_topo_path1_num_; ++i) {
@@ -443,6 +447,7 @@ void PlanningVisualization::drawTopoPathsPhase2(
 
 void PlanningVisualization::drawTopoPathsPhase1(
     vector<vector<Eigen::Vector3d>>& paths, double size) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   // clear drawn paths
   Eigen::Vector4d color1(1, 1, 1, 1);
   for (int i = 0; i < last_topo_path2_num_; ++i) {
@@ -486,6 +491,7 @@ void PlanningVisualization::drawPolynomialTraj(
 
 void PlanningVisualization::drawPrediction(
     ObjPrediction pred, double resolution, const Eigen::Vector4d& color, int id) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   ros::Time time_now = ros::Time::now();
   double start_time = (time_now - ObjHistory::global_start_time_).toSec();
   const double range = 5.6;
@@ -505,6 +511,7 @@ void PlanningVisualization::drawPrediction(
 
 void PlanningVisualization::drawVisibConstraint(
     const Eigen::MatrixXd& ctrl_pts, const vector<Eigen::Vector3d>& block_pts) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   int visible_num = ctrl_pts.rows() - block_pts.size();
 
   /* draw block points, their projection rays and visible pairs */
@@ -536,6 +543,7 @@ void PlanningVisualization::drawVisibConstraint(
 
 void PlanningVisualization::drawVisibConstraint(
     const Eigen::MatrixXd& pts, const vector<VisiblePair>& pairs) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   vector<Eigen::Vector3d> pts1, pts2, pts3, pts4;
   for (auto pr : pairs) {
     Eigen::Vector3d qb = pr.qb_;
@@ -555,6 +563,7 @@ void PlanningVisualization::drawVisibConstraint(
 }
 
 void PlanningVisualization::drawViewConstraint(const ViewConstraint& vc) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   if (vc.idx_ < 0) return;
   visualization_msgs::Marker mk;
   mk.header.frame_id = "world";
@@ -587,6 +596,7 @@ void PlanningVisualization::drawViewConstraint(const ViewConstraint& vc) {
 }
 
 void PlanningVisualization::drawFrontier(const vector<vector<Eigen::Vector3d>>& frontiers) {
+  if (!enable_all_markers_ || !enable_heavy_markers_) return;
   for (int i = 0; i < frontiers.size(); ++i) {
     // displayCubeList(frontiers[i], 0.1, getColor(double(i) / frontiers.size(),
     // 0.4), i, 4);
@@ -603,6 +613,7 @@ void PlanningVisualization::drawFrontier(const vector<vector<Eigen::Vector3d>>& 
 
 void PlanningVisualization::drawYawTraj(
     NonUniformBspline& pos, NonUniformBspline& yaw, const double& dt) {
+  if (!enable_all_markers_) return;
   double duration = pos.getTimeSum();
   vector<Eigen::Vector3d> pts1, pts2;
 
@@ -620,6 +631,7 @@ void PlanningVisualization::drawYawTraj(
 
 void PlanningVisualization::drawYawPath(
     NonUniformBspline& pos, const vector<double>& yaw, const double& dt) {
+  if (!enable_all_markers_) return;
   vector<Eigen::Vector3d> pts1, pts2;
 
   for (int i = 0; i < yaw.size(); ++i) {

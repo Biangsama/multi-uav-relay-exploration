@@ -3,8 +3,9 @@
   <arg name="use_static_tf" default="true"/>
   <arg name="world_frame" default="world"/>
   <arg name="map_frame" default="map"/>
-  <arg name="rviz_config" default="$(find relay_racer_integration)/rviz/relay_swarm.rviz"/>
+  <arg name="rviz_config" default="$(find relay_racer_integration)/rviz/relay_swarm_lite.rviz"/>
   <arg name="relay_hold_sec" default="20.0"/>
+  <arg name="overlay_publish_rate_hz" default="3.0"/>
 
   <node if="$(arg use_static_tf)"
         pkg="tf"
@@ -21,6 +22,7 @@
     <param name="swarm_comm_state_topic" value="/relay_integration/swarm_comm_state"/>
     <param name="agent_pose_topic" value="/agent_poses"/>
     <param name="relay_hold_sec" value="$(arg relay_hold_sec)"/>
+    <param name="publish_rate_hz" value="$(arg overlay_publish_rate_hz)"/>
   </node>
 
   <node if="$(arg use_rviz)"

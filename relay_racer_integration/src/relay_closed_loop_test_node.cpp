@@ -10,6 +10,7 @@
 
 #include <relay_racer_integration/RelayRoleCmd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -112,29 +113,26 @@ std::string JoinEdges(const std::vector<std::pair<uint32_t, uint32_t>>& values) 
   return oss.str();
 }
 
-void AddBidirectionalEdge(const uint32_t lhs_platform_id, const uint32_t rhs_platform_id,
+void AddDirectedEdge(const uint32_t src_platform_id, const uint32_t dst_platform_id,
+    const uint32_t seq, const uint64_t tx_time_us, const uint64_t rx_time_us,
     protobuf_msgs::NetRxEventsPayload* payload) {
-  auto* lhs_to_rhs = payload->add_events();
-  lhs_to_rhs->set_src_id(lhs_platform_id);
-  lhs_to_rhs->set_dst_id(rhs_platform_id);
-  lhs_to_rhs->set_flow_id(1);
-  lhs_to_rhs->set_seq(1);
-  lhs_to_rhs->set_tx_time_us(1000);
-  lhs_to_rhs->set_rx_time_us(1100);
-  lhs_to_rhs->set_delay_us(100);
-  lhs_to_rhs->set_payload_bytes(64);
-  lhs_to_rhs->set_rssi_dbm_x10(-450);
+  auto* event = payload->add_events();
+  event->set_src_id(src_platform_id);
+  event->set_dst_id(dst_platform_id);
+  event->set_flow_id(1);
+  event->set_seq(seq);
+  event->set_tx_time_us(tx_time_us);
+  event->set_rx_time_us(rx_time_us);
+  event->set_delay_us(rx_time_us >= tx_time_us ? (rx_time_us - tx_time_us) : 0);
+  event->set_payload_bytes(64);
+  event->set_rssi_dbm_x10(-450);
+}
 
-  auto* rhs_to_lhs = payload->add_events();
-  rhs_to_lhs->set_src_id(rhs_platform_id);
-  rhs_to_lhs->set_dst_id(lhs_platform_id);
-  rhs_to_lhs->set_flow_id(1);
-  rhs_to_lhs->set_seq(2);
-  rhs_to_lhs->set_tx_time_us(1200);
-  rhs_to_lhs->set_rx_time_us(1300);
-  rhs_to_lhs->set_delay_us(100);
-  rhs_to_lhs->set_payload_bytes(64);
-  rhs_to_lhs->set_rssi_dbm_x10(-450);
+void AddBidirectionalEdge(const uint32_t lhs_platform_id, const uint32_t rhs_platform_id,
+    const uint32_t first_seq, const uint64_t tx_time_us, const uint64_t rx_time_us,
+    protobuf_msgs::NetRxEventsPayload* payload) {
+  AddDirectedEdge(lhs_platform_id, rhs_platform_id, first_seq, tx_time_us, rx_time_us, payload);
+  AddDirectedEdge(rhs_platform_id, lhs_platform_id, first_seq + 1, tx_time_us, rx_time_us, payload);
 }
 
 }  // namespace
@@ -166,11 +164,17 @@ public:
         post_startup_service_repeat_count_(1),
         post_startup_service_repeat_period_sec_(0.5),
         planning_artifact_min_messages_(1),
+        allow_empty_service_edges_(false),
+        service_edges_bidirectional_(true),
+        service_window_span_us_(1000),
+        service_window_end_us_base_(2000),
+        service_window_step_us_(1000),
         relay_role_seen_(false),
         relay_active_now_(false),
         goal_published_(false),
         planning_artifact_seen_(false),
         post_startup_service_calls_made_(0),
+        service_calls_made_(0),
         goal_x_(1.0),
         goal_y_(0.0),
         goal_z_(1.0) {
@@ -208,6 +212,13 @@ public:
         post_startup_service_repeat_period_sec_);
     pnh_.param("planning_artifact_min_messages", planning_artifact_min_messages_,
         planning_artifact_min_messages_);
+    pnh_.param("allow_empty_service_edges", allow_empty_service_edges_, allow_empty_service_edges_);
+    pnh_.param("service_edges_bidirectional", service_edges_bidirectional_,
+        service_edges_bidirectional_);
+    pnh_.param("service_window_span_us", service_window_span_us_, service_window_span_us_);
+    pnh_.param("service_window_end_us_base", service_window_end_us_base_,
+        service_window_end_us_base_);
+    pnh_.param("service_window_step_us", service_window_step_us_, service_window_step_us_);
     pnh_.param<std::string>("planning_artifact_agent_ids", planning_artifact_agent_ids_csv_,
         planner_ready_agent_ids_csv_);
     pnh_.param<std::string>("service_agent_x_positions", service_agent_x_positions_csv_,
@@ -229,11 +240,14 @@ public:
       service_agent_x_positions_csv_ = JoinDoubles(service_agent_x_positions_);
     }
     service_edges_ = ParseEdgePairsCsv(service_edges_csv_);
-    if (service_edges_.empty()) {
+    if (service_edges_.empty() && !allow_empty_service_edges_) {
       service_edges_.emplace_back(0, 1);
       service_edges_.emplace_back(1, 2);
       service_edges_csv_ = JoinEdges(service_edges_);
     }
+    service_window_span_us_ = std::max(0, service_window_span_us_);
+    service_window_end_us_base_ = std::max(0, service_window_end_us_base_);
+    service_window_step_us_ = std::max(0, service_window_step_us_);
     if (post_startup_service_repeat_count_ < 0) {
       post_startup_service_repeat_count_ = 0;
     }
@@ -282,6 +296,11 @@ public:
                     << ", post_startup_service_repeat_period_sec=" << post_startup_service_repeat_period_sec_
                     << ", planning_artifact_agent_ids=" << planning_artifact_agent_ids_csv_
                     << ", planning_artifact_min_messages=" << planning_artifact_min_messages_
+                    << ", allow_empty_service_edges=" << std::boolalpha << allow_empty_service_edges_
+                    << ", service_edges_bidirectional=" << service_edges_bidirectional_
+                    << ", service_window_span_us=" << service_window_span_us_
+                    << ", service_window_end_us_base=" << service_window_end_us_base_
+                    << ", service_window_step_us=" << service_window_step_us_
                     << ", service_agent_x_positions=" << service_agent_x_positions_csv_
                     << ", service_edges=" << service_edges_csv_);
   }
@@ -436,11 +455,27 @@ private:
     }
 
     protobuf_msgs::NetRxEventsPayload payload;
+    const int call_index = service_calls_made_++;
+    const uint64_t window_end_us = static_cast<uint64_t>(
+        std::max(0, service_window_end_us_base_ + call_index * service_window_step_us_));
+    const uint64_t window_span_us = static_cast<uint64_t>(std::max(0, service_window_span_us_));
+    payload.set_t_window_end_us(window_end_us);
+    payload.set_t_window_start_us(window_end_us > window_span_us ? (window_end_us - window_span_us) : 0);
+    const uint64_t rx_time_us = window_end_us > 0 ? window_end_us : window_span_us;
+    const uint64_t tx_time_us = rx_time_us > 100 ? (rx_time_us - 100) : 0;
+
+    uint32_t next_seq = 1;
     for (const auto& edge : service_edges_) {
       if (edge.first >= service_agent_x_positions_.size() || edge.second >= service_agent_x_positions_.size()) {
         continue;
       }
-      AddBidirectionalEdge(edge.first, edge.second, &payload);
+      if (service_edges_bidirectional_) {
+        AddBidirectionalEdge(edge.first, edge.second, next_seq, tx_time_us, rx_time_us, &payload);
+        next_seq += 2;
+      } else {
+        AddDirectedEdge(edge.first, edge.second, next_seq, tx_time_us, rx_time_us, &payload);
+        ++next_seq;
+      }
     }
 
     std::string bytes;
@@ -454,7 +489,11 @@ private:
 
     ROS_INFO_STREAM("Called get_agents_velocities for context=" << context
                     << " with agent_x_positions=" << service_agent_x_positions_csv_
-                    << " edges=" << service_edges_csv_);
+                    << " edges=" << service_edges_csv_
+                    << " bidirectional=" << std::boolalpha << service_edges_bidirectional_
+                    << " window_end_us=" << window_end_us
+                    << " window_span_us=" << window_span_us
+                    << " events=" << payload.events_size());
     return true;
   }
 
@@ -608,12 +647,18 @@ private:
   int post_startup_service_repeat_count_;
   double post_startup_service_repeat_period_sec_;
   int planning_artifact_min_messages_;
+  bool allow_empty_service_edges_;
+  bool service_edges_bidirectional_;
+  int service_window_span_us_;
+  int service_window_end_us_base_;
+  int service_window_step_us_;
   int test_agent_id_;
   bool relay_role_seen_;
   bool relay_active_now_;
   bool goal_published_;
   bool planning_artifact_seen_;
   int post_startup_service_calls_made_;
+  int service_calls_made_;
   double goal_x_;
   double goal_y_;
   double goal_z_;

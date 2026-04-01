@@ -1,0 +1,204 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Robots1
+        - /Relay1
+      Splitter Ratio: 0.6
+    Tree Height: 520
+  - Class: rviz/Selection
+    Name: Selection
+  - Class: rviz/Tool Properties
+    Expanded:
+      - /2D Pose Estimate1
+      - /2D Nav Goal1
+      - /Publish Point1
+    Name: Tool Properties
+    Splitter Ratio: 0.58
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz/Time
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+Preferences:
+  PromptSaveOnExit: true
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: true
+      Alpha: 0.35
+      Cell Size: 1
+      Color: 160; 160; 164
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 40
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Group
+      Enabled: true
+      Name: Robots
+      Displays:
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_1/robot
+          Name: robot1
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_2/robot
+          Name: robot2
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_3/robot
+          Name: robot3
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_4/robot
+          Name: robot4
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_5/robot
+          Name: robot5
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /odom_visualization_6/robot
+          Name: robot6
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
+    - Class: rviz/Group
+      Enabled: true
+      Name: Relay
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /id_markers
+          Name: id_markers
+          Namespaces:
+            relay_real_id_markers: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /relay_integration/comm_state_links
+          Name: comm_state_links
+          Namespaces:
+            comm_state_links: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /relay_integration/role_markers
+          Name: role_markers
+          Namespaces:
+            relay_roles: true
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /relay_integration/relay_target_markers
+          Name: relay_target_markers
+          Namespaces:
+            relay_target: true
+            relay_target_label: true
+            relay_target_line: true
+          Queue Size: 20
+          Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: map
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetInitialPose
+      Topic: /initialpose
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+    - Class: rviz/PublishPoint
+      Single click: true
+      Topic: /clicked_point
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 20
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.0
+      Target Frame: <Fixed Frame>
+      Yaw: 0.8
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Selection:
+    collapsed: false
+  Time:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1600
+  X: 60
+  Y: 40

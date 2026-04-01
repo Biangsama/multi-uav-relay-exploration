@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <set>
@@ -46,6 +47,14 @@ double Clamp01(const double value) {
 
 long long DirectedKey(const int src_id, const int dst_id) {
   return (static_cast<long long>(src_id) << 32) ^ static_cast<unsigned int>(dst_id);
+}
+
+int DirectedKeySrc(const long long key) {
+  return static_cast<int>(key >> 32);
+}
+
+int DirectedKeyDst(const long long key) {
+  return static_cast<int>(static_cast<unsigned int>(key));
 }
 
 double SquaredDistance(const geometry_msgs::Point& a, const geometry_msgs::Point& b) {
@@ -233,6 +242,7 @@ public:
         prefer_service_input_(true),
         service_input_timeout_sec_(1.0),
         service_input_replaces_graph_(false),
+        comm_component_requires_bidirectional_(false),
         last_input_source_(InputSource::kUnknown),
         relay_policy_mode_(RelayPolicyMode::kRule),
         relay_target_use_fixed_z_(true),
@@ -289,6 +299,10 @@ public:
     pnh_.param("prefer_service_input", prefer_service_input_, true);
     pnh_.param("service_input_timeout_sec", service_input_timeout_sec_, 1.0);
     pnh_.param("service_input_replaces_graph", service_input_replaces_graph_, false);
+    pnh_.param("comm_component_requires_bidirectional", comm_component_requires_bidirectional_, false);
+    pnh_.param("observed_agent_retention_sec", observed_agent_retention_sec_, 5.0);
+    pnh_.param("agent_cache_timeout_sec", agent_cache_timeout_sec_, 3.0);
+    pnh_.param("edge_state_prune_age_sec", edge_state_prune_age_sec_, 5.0);
     pnh_.param<std::string>("raw_comm_topic", raw_comm_topic_, "/comm/rx_events_bytes");
     pnh_.param<std::string>("relay_role_topic", relay_role_topic_, "/relay_integration/relay_role_cmd");
     pnh_.param<std::string>(
@@ -323,6 +337,9 @@ public:
     relay_frontier_regression_grace_sec_ = std::max(0.0, relay_frontier_regression_grace_sec_);
     relay_frontier_regression_abs_threshold_ = std::max(0, relay_frontier_regression_abs_threshold_);
     relay_frontier_regression_ratio_threshold_ = std::max(1.0, relay_frontier_regression_ratio_threshold_);
+    observed_agent_retention_sec_ = std::max(0.0, observed_agent_retention_sec_);
+    agent_cache_timeout_sec_ = std::max(0.0, agent_cache_timeout_sec_);
+    edge_state_prune_age_sec_ = std::max(0.0, edge_state_prune_age_sec_);
     if (relay_target_min_z_ > relay_target_max_z_) {
       std::swap(relay_target_min_z_, relay_target_max_z_);
     }
@@ -360,6 +377,11 @@ public:
                     << ", prefer_service_input=" << std::boolalpha << prefer_service_input_
                     << ", service_input_timeout_sec=" << service_input_timeout_sec_
                     << ", service_input_replaces_graph=" << service_input_replaces_graph_
+                    << ", comm_component_requires_bidirectional=" << std::boolalpha
+                    << comm_component_requires_bidirectional_
+                    << ", observed_agent_retention_sec=" << observed_agent_retention_sec_
+                    << ", agent_cache_timeout_sec=" << agent_cache_timeout_sec_
+                    << ", edge_state_prune_age_sec=" << edge_state_prune_age_sec_
                     << ", relay_trigger_age_threshold=" << relay_trigger_age_threshold_
                     << ", relay_link_exit_age_threshold=" << relay_link_exit_age_threshold_
                     << ", relay_trigger_persist_time=" << relay_trigger_persist_time_
@@ -414,24 +436,31 @@ private:
   };
 
   struct DirectedEdgeState {
-    ros::Time stamp;
+    uint64_t last_rx_time_us = 0;
     float quality = 0.0f;
     double delay_sec = 0.0;
+  };
+
+  struct CommSnapshot {
+    uint64_t window_start_us = 0;
+    uint64_t window_end_us = 0;
+    uint64_t horizon_time_us = 0;
+    size_t event_count = 0;
+    std::unordered_map<long long, DirectedEdgeState> edges;
+    std::set<int> observed_agent_ids;
   };
 
   bool getAgentVelocitiesCallback(dancers_msgs::GetAgentVelocities::Request& req,
       dancers_msgs::GetAgentVelocities::Response& res) {
     updateAgentCache(req.agent_structs);
-    if (service_input_replaces_graph_ && !req.comm_rx_events_bytes.empty()) {
-      directed_edges_.clear();
-      latest_link_up_.clear();
-    }
-    if (!req.comm_rx_events_bytes.empty()) {
-      parseCommEventsBytes(req.comm_rx_events_bytes);
-    }
 
-    last_service_update_ = ros::Time::now();
-    evaluateAndPublish(InputSource::kServiceChain);
+    CommSnapshot snapshot;
+    const bool has_snapshot = decodeCommSnapshot(req.comm_rx_events_bytes, &snapshot);
+    const ros::Time now = ros::Time::now();
+    const bool applied_fresh_snapshot = has_snapshot &&
+        applyCommSnapshot(snapshot, InputSource::kServiceChain, service_input_replaces_graph_, now);
+
+    evaluateAndPublish(applied_fresh_snapshot ? InputSource::kServiceChain : InputSource::kUnknown);
     fillZeroVelocityResponse(req.agent_structs, res);
     return true;
   }
@@ -441,15 +470,20 @@ private:
       return;
     }
 
-    const ros::Time now = ros::Time::now();
-    if (shouldPreferServiceInput(now)) {
-      ROS_INFO_THROTTLE(
-          2.0,
-          "Skipping raw /comm/rx_events_bytes parsing and relay evaluation because recent service-chain input is available.");
+    CommSnapshot snapshot;
+    if (!decodeCommSnapshot(msg->data, &snapshot)) {
       return;
     }
 
-    if (!parseCommEventsBytes(msg->data)) {
+    const ros::Time now = ros::Time::now();
+    if (shouldPreferServiceInput(now, &snapshot)) {
+      ROS_INFO_THROTTLE(
+          2.0,
+          "Skipping raw /comm/rx_events_bytes parsing and relay evaluation because a fresher service-chain snapshot is active.");
+      return;
+    }
+
+    if (!applyCommSnapshot(snapshot, InputSource::kRawTopic, false, now)) {
       return;
     }
 
@@ -478,6 +512,14 @@ private:
     }
   }
 
+  void noteObservedAgent(const int agent_id, const ros::Time& now) {
+    if (agent_id <= 0) {
+      return;
+    }
+    observed_agent_ids_.insert(agent_id);
+    agent_last_observed_wall_time_[agent_id] = now;
+  }
+
   void updateAgentCache(const std::vector<dancers_msgs::AgentStruct>& agents) {
     const ros::Time now = ros::Time::now();
     for (const auto& agent : agents) {
@@ -498,18 +540,52 @@ private:
       entry.heading = agent.state.heading;
       entry.stamp = now;
       agent_cache_[racer_id] = entry;
-      observed_agent_ids_.insert(racer_id);
+      noteObservedAgent(racer_id, now);
     }
   }
 
-  bool parseCommEventsBytes(const std::vector<uint8_t>& bytes) {
+  uint64_t resolveEventTimeUs(
+      const protobuf_msgs::RxEvent& event, const uint64_t snapshot_window_end_us) const {
+    if (event.rx_time_us() != 0) {
+      return event.rx_time_us();
+    }
+    if (event.tx_time_us() != 0 && event.delay_us() != 0) {
+      return event.tx_time_us() + event.delay_us();
+    }
+    if (snapshot_window_end_us != 0) {
+      return snapshot_window_end_us;
+    }
+    return event.tx_time_us();
+  }
+
+  float computeEdgeQuality(const protobuf_msgs::RxEvent& event, const double delay_sec) const {
+    double quality = 1.0;
+    if (delay_sec > 0.0) {
+      quality = 1.0 / (1.0 + 10.0 * delay_sec);
+    }
+    if (event.rssi_dbm_x10() != 0) {
+      quality += 0.001 * static_cast<double>(event.rssi_dbm_x10() + 900);
+    }
+    return static_cast<float>(Clamp01(quality));
+  }
+
+  bool decodeCommSnapshot(const std::vector<uint8_t>& bytes, CommSnapshot* snapshot) const {
+    if (snapshot == nullptr || bytes.empty()) {
+      return false;
+    }
+
     protobuf_msgs::NetRxEventsPayload payload;
     if (!payload.ParseFromArray(bytes.data(), static_cast<int>(bytes.size()))) {
       ROS_WARN_THROTTLE(1.0, "Failed to parse NetRxEventsPayload bytes.");
       return false;
     }
 
-    const ros::Time now = ros::Time::now();
+    *snapshot = CommSnapshot();
+    snapshot->window_start_us = payload.t_window_start_us();
+    snapshot->window_end_us = payload.t_window_end_us();
+    snapshot->horizon_time_us = snapshot->window_end_us;
+    snapshot->event_count = static_cast<size_t>(payload.events_size());
+
     for (const auto& event : payload.events()) {
       const int src_id = RacerIdFromPlatformId(static_cast<int>(event.src_id()), id_offset_);
       const int dst_id = RacerIdFromPlatformId(static_cast<int>(event.dst_id()), id_offset_);
@@ -517,40 +593,172 @@ private:
         continue;
       }
 
-      observed_agent_ids_.insert(src_id);
-      observed_agent_ids_.insert(dst_id);
+      snapshot->observed_agent_ids.insert(src_id);
+      snapshot->observed_agent_ids.insert(dst_id);
 
-      DirectedEdgeState& edge_state = directed_edges_[DirectedKey(src_id, dst_id)];
-      edge_state.stamp = now;
-      edge_state.delay_sec = static_cast<double>(event.delay_us()) * 1e-6;
+      DirectedEdgeState candidate;
+      candidate.last_rx_time_us = resolveEventTimeUs(event, snapshot->window_end_us);
+      candidate.delay_sec = static_cast<double>(event.delay_us()) * 1e-6;
+      candidate.quality = computeEdgeQuality(event, candidate.delay_sec);
+      if (candidate.last_rx_time_us > 0) {
+        snapshot->horizon_time_us = std::max(snapshot->horizon_time_us, candidate.last_rx_time_us);
+      }
 
-      double quality = 1.0;
-      if (edge_state.delay_sec > 0.0) {
-        quality = 1.0 / (1.0 + 10.0 * edge_state.delay_sec);
+      const long long edge_key = DirectedKey(src_id, dst_id);
+      const auto existing_it = snapshot->edges.find(edge_key);
+      if (existing_it == snapshot->edges.end() ||
+          candidate.last_rx_time_us > existing_it->second.last_rx_time_us ||
+          (candidate.last_rx_time_us == existing_it->second.last_rx_time_us &&
+           candidate.quality > existing_it->second.quality)) {
+        snapshot->edges[edge_key] = candidate;
       }
-      if (event.rssi_dbm_x10() != 0) {
-        quality += 0.001 * static_cast<double>(event.rssi_dbm_x10() + 900);
-      }
-      edge_state.quality = static_cast<float>(Clamp01(quality));
+    }
+
+    if (snapshot->horizon_time_us == 0) {
+      ROS_WARN_THROTTLE(1.0,
+          "NetRxEventsPayload missing usable timing metadata; dropping snapshot.");
+      return false;
     }
     return true;
   }
 
-  bool shouldPreferServiceInput(const ros::Time& now) const {
-    if (!prefer_service_input_ || last_service_update_.isZero()) {
+  bool applyCommSnapshot(const CommSnapshot& snapshot, const InputSource source,
+      const bool replace_graph, const ros::Time& now) {
+    if (snapshot.horizon_time_us == 0 || snapshot.horizon_time_us <= latest_comm_horizon_us_) {
       return false;
     }
-    return (now - last_service_update_).toSec() <= service_input_timeout_sec_;
+
+    if (replace_graph) {
+      directed_edges_.clear();
+      latest_link_up_.clear();
+    }
+
+    latest_comm_horizon_us_ = snapshot.horizon_time_us;
+    for (const int agent_id : snapshot.observed_agent_ids) {
+      noteObservedAgent(agent_id, now);
+    }
+    for (const auto& pair : snapshot.edges) {
+      directed_edges_[pair.first] = pair.second;
+    }
+
+    if (source == InputSource::kServiceChain) {
+      last_service_snapshot_horizon_us_ = snapshot.horizon_time_us;
+      last_fresh_service_snapshot_wall_time_ = now;
+    } else if (source == InputSource::kRawTopic) {
+      last_raw_snapshot_horizon_us_ = snapshot.horizon_time_us;
+    }
+    return true;
+  }
+
+  bool shouldPreferServiceInput(
+      const ros::Time& now, const CommSnapshot* incoming_snapshot = nullptr) const {
+    if (!prefer_service_input_ || last_fresh_service_snapshot_wall_time_.isZero()) {
+      return false;
+    }
+    if ((now - last_fresh_service_snapshot_wall_time_).toSec() > service_input_timeout_sec_) {
+      return false;
+    }
+    if (incoming_snapshot != nullptr && incoming_snapshot->horizon_time_us > 0 &&
+        incoming_snapshot->horizon_time_us > last_service_snapshot_horizon_us_) {
+      return false;
+    }
+    return true;
+  }
+
+  void pruneStaleState(const ros::Time& now) {
+    std::set<int> pruned_observed_ids;
+    if (observed_agent_retention_sec_ > 0.0) {
+      for (auto it = agent_last_observed_wall_time_.begin(); it != agent_last_observed_wall_time_.end();) {
+        if (!it->second.isZero() && (now - it->second).toSec() > observed_agent_retention_sec_) {
+          pruned_observed_ids.insert(it->first);
+          it = agent_last_observed_wall_time_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    for (const int agent_id : pruned_observed_ids) {
+      observed_agent_ids_.erase(agent_id);
+      latest_components_.erase(agent_id);
+      agent_cache_.erase(agent_id);
+    }
+
+    int pruned_agent_cache = 0;
+    if (agent_cache_timeout_sec_ > 0.0) {
+      for (auto it = agent_cache_.begin(); it != agent_cache_.end();) {
+        if (!it->second.stamp.isZero() && (now - it->second.stamp).toSec() > agent_cache_timeout_sec_) {
+          it = agent_cache_.erase(it);
+          ++pruned_agent_cache;
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    int pruned_edges = 0;
+    for (auto it = directed_edges_.begin(); it != directed_edges_.end();) {
+      const int src_id = DirectedKeySrc(it->first);
+      const int dst_id = DirectedKeyDst(it->first);
+      bool remove = pruned_observed_ids.count(src_id) != 0 || pruned_observed_ids.count(dst_id) != 0;
+      if (!remove && edge_state_prune_age_sec_ > 0.0 && latest_comm_horizon_us_ > 0) {
+        double edge_age_sec = std::numeric_limits<double>::infinity();
+        if (it->second.last_rx_time_us != 0) {
+          edge_age_sec = latest_comm_horizon_us_ <= it->second.last_rx_time_us
+              ? 0.0
+              : static_cast<double>(latest_comm_horizon_us_ - it->second.last_rx_time_us) * 1e-6;
+        }
+        if (edge_age_sec > edge_state_prune_age_sec_) {
+          remove = true;
+        }
+      }
+      if (remove) {
+        it = directed_edges_.erase(it);
+        ++pruned_edges;
+      } else {
+        ++it;
+      }
+    }
+
+    for (auto it = latest_link_up_.begin(); it != latest_link_up_.end();) {
+      const int src_id = DirectedKeySrc(it->first);
+      const int dst_id = DirectedKeyDst(it->first);
+      if (pruned_observed_ids.count(src_id) != 0 || pruned_observed_ids.count(dst_id) != 0) {
+        it = latest_link_up_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    if (!pruned_observed_ids.empty() || pruned_agent_cache > 0 || pruned_edges > 0) {
+      ROS_INFO_STREAM_THROTTLE(1.0,
+          "[RelayCtl] pruned stale state observed_agents=" << pruned_observed_ids.size()
+          << " agent_cache=" << pruned_agent_cache
+          << " edges=" << pruned_edges);
+    }
   }
 
   void evaluateAndPublish(const InputSource input_source) {
-    noteInputSource(input_source);
+    if (input_source != InputSource::kUnknown) {
+      noteInputSource(input_source);
+    }
 
     const ros::Time now = ros::Time::now();
     if (first_eval_time_.isZero()) {
       first_eval_time_ = now;
     }
+    pruneStaleState(now);
     updateCommGraph(now);
+
+    if (relay_active_ && relay_agent_id_ > 0) {
+      const bool relay_agent_visible =
+          std::find(current_comm_state_.agent_ids.begin(), current_comm_state_.agent_ids.end(),
+                    relay_agent_id_) != current_comm_state_.agent_ids.end();
+      const bool relay_agent_has_pose = agent_cache_.find(relay_agent_id_) != agent_cache_.end();
+      if (!relay_agent_visible || !relay_agent_has_pose) {
+        deactivateRelay(now, "relay_agent_stale");
+      }
+    }
 
     const RelayPolicyMode effective_policy_mode = effectiveRelayPolicyMode();
     if (effective_policy_mode == RelayPolicyMode::kOff) {
@@ -640,8 +848,16 @@ private:
         const long long edge_key = DirectedKey(src_id, dst_id);
         const auto edge_it = directed_edges_.find(edge_key);
         const bool direct_seen = edge_it != directed_edges_.end();
-        const double link_age = direct_seen ? (now - edge_it->second.stamp).toSec()
-                                            : std::numeric_limits<double>::infinity();
+        double link_age = std::numeric_limits<double>::infinity();
+        if (direct_seen) {
+          if (latest_comm_horizon_us_ == 0 || edge_it->second.last_rx_time_us == 0) {
+            link_age = std::numeric_limits<double>::infinity();
+          } else if (latest_comm_horizon_us_ <= edge_it->second.last_rx_time_us) {
+            link_age = 0.0;
+          } else {
+            link_age = static_cast<double>(latest_comm_horizon_us_ - edge_it->second.last_rx_time_us) * 1e-6;
+          }
+        }
         const auto prev_it = previous_link_up.find(edge_key);
         const bool was_up = prev_it != previous_link_up.end() && prev_it->second;
         const double link_age_threshold = was_up ? relay_link_exit_age_threshold_ : relay_trigger_age_threshold_;
@@ -665,7 +881,10 @@ private:
         const int rhs = agent_ids[j];
         const bool lhs_rhs = latestLinkUp(lhs, rhs);
         const bool rhs_lhs = latestLinkUp(rhs, lhs);
-        if (lhs_rhs && rhs_lhs) {
+        const bool undirected_link_up = comm_component_requires_bidirectional_
+            ? (lhs_rhs && rhs_lhs)
+            : (lhs_rhs || rhs_lhs);
+        if (undirected_link_up) {
           adjacency[lhs].push_back(rhs);
           adjacency[rhs].push_back(lhs);
         }
@@ -1001,6 +1220,69 @@ private:
     return found;
   }
 
+  bool computeWeightedCentroidForComponents(
+      const std::vector<std::vector<int>>& components, geometry_msgs::Point* point) const {
+    if (point == nullptr) {
+      return false;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    double total_weight = 0.0;
+    for (const auto& ids : components) {
+      geometry_msgs::Point centroid;
+      if (!computeCentroidForAgents(ids, &centroid)) {
+        continue;
+      }
+      const double weight = static_cast<double>(std::max<size_t>(1, ids.size()));
+      x += weight * centroid.x;
+      y += weight * centroid.y;
+      z += weight * centroid.z;
+      total_weight += weight;
+    }
+    if (total_weight <= 0.0) {
+      return false;
+    }
+
+    point->x = x / total_weight;
+    point->y = y / total_weight;
+    point->z = z / total_weight;
+    return true;
+  }
+
+  double distanceToClosestAgent(
+      const geometry_msgs::Point& point, const std::vector<int>& ids) const {
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (const int agent_id : ids) {
+      const auto agent_it = agent_cache_.find(agent_id);
+      if (agent_it == agent_cache_.end()) {
+        continue;
+      }
+      best_distance_sq = std::min(best_distance_sq, SquaredDistance(point, agent_it->second.position));
+    }
+    if (!std::isfinite(best_distance_sq)) {
+      return std::numeric_limits<double>::infinity();
+    }
+    return std::sqrt(best_distance_sq);
+  }
+
+  double scoreAnchorAgainstComponents(
+      const geometry_msgs::Point& candidate,
+      const std::vector<std::vector<int>>& components) const {
+    double score = 0.0;
+    bool found = false;
+    for (const auto& ids : components) {
+      const double distance = distanceToClosestAgent(candidate, ids);
+      if (!std::isfinite(distance)) {
+        continue;
+      }
+      score += static_cast<double>(std::max<size_t>(1, ids.size())) * distance;
+      found = true;
+    }
+    return found ? score : std::numeric_limits<double>::infinity();
+  }
+
   double computeBacktrackPenalty(
       const AgentCacheEntry& entry, const geometry_msgs::Point& anchor) const {
     const double vx = entry.velocity.x;
@@ -1197,6 +1479,57 @@ private:
     anchor.z = 0.0;
 
     const auto ordered_components = orderedComponentsBySize();
+    if (ordered_components.size() >= 3) {
+      // Score candidates against every component instead of only the largest two.
+      std::vector<geometry_msgs::Point> candidates;
+      geometry_msgs::Point weighted_centroid;
+      if (computeWeightedCentroidForComponents(ordered_components, &weighted_centroid)) {
+        candidates.push_back(weighted_centroid);
+      }
+
+      for (size_t i = 0; i < ordered_components.size(); ++i) {
+        for (size_t j = i + 1; j < ordered_components.size(); ++j) {
+          geometry_msgs::Point candidate;
+          bool found_candidate = false;
+          if (relay_anchor_use_nearest_pair_midpoint_) {
+            found_candidate =
+                computeNearestBridgeMidpoint(ordered_components[i], ordered_components[j], &candidate);
+          }
+          if (!found_candidate) {
+            geometry_msgs::Point lhs;
+            geometry_msgs::Point rhs;
+            if (computeCentroidForAgents(ordered_components[i], &lhs) &&
+                computeCentroidForAgents(ordered_components[j], &rhs)) {
+              candidate.x = 0.5 * (lhs.x + rhs.x);
+              candidate.y = 0.5 * (lhs.y + rhs.y);
+              candidate.z = 0.5 * (lhs.z + rhs.z);
+              found_candidate = true;
+            }
+          }
+          if (found_candidate) {
+            candidates.push_back(candidate);
+          }
+        }
+      }
+
+      double best_score = std::numeric_limits<double>::infinity();
+      bool found_anchor = false;
+      for (const auto& candidate : candidates) {
+        const double score = scoreAnchorAgainstComponents(candidate, ordered_components);
+        if (score >= best_score) {
+          continue;
+        }
+        best_score = score;
+        anchor = candidate;
+        found_anchor = true;
+      }
+
+      if (found_anchor) {
+        sanitizeRelayAnchor(&anchor);
+        return anchor;
+      }
+    }
+
     if (ordered_components.size() >= 2) {
       if (relay_anchor_use_nearest_pair_midpoint_ &&
           computeNearestBridgeMidpoint(ordered_components[0], ordered_components[1], &anchor)) {
@@ -1321,6 +1654,10 @@ private:
   bool prefer_service_input_;
   double service_input_timeout_sec_;
   bool service_input_replaces_graph_;
+  bool comm_component_requires_bidirectional_;
+  double observed_agent_retention_sec_ = 5.0;
+  double agent_cache_timeout_sec_ = 3.0;
+  double edge_state_prune_age_sec_ = 5.0;
   bool publish_relay_role_cmds_;
   std::string raw_comm_topic_;
   std::string relay_role_topic_;
@@ -1329,6 +1666,7 @@ private:
   std::string service_name_;
 
   std::unordered_map<int, AgentCacheEntry> agent_cache_;
+  std::unordered_map<int, ros::Time> agent_last_observed_wall_time_;
   std::unordered_map<long long, DirectedEdgeState> directed_edges_;
   std::unordered_map<long long, bool> latest_link_up_;
   std::map<int, int> latest_components_;
@@ -1358,7 +1696,10 @@ private:
   int active_grid_count_ = -1;
   double completion_ratio_ = 0.0;
   std::unordered_map<int, double> relay_total_occupancy_by_agent_;
-  ros::Time last_service_update_;
+  uint64_t latest_comm_horizon_us_ = 0;
+  uint64_t last_service_snapshot_horizon_us_ = 0;
+  uint64_t last_raw_snapshot_horizon_us_ = 0;
+  ros::Time last_fresh_service_snapshot_wall_time_;
   ros::Time last_raw_topic_update_;
   InputSource last_input_source_;
   RelayPolicyMode relay_policy_mode_;

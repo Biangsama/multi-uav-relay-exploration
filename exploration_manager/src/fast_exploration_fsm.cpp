@@ -918,9 +918,12 @@ void FastExplorationFSM::relayRoleCmdCallback(
       current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY;
 
   if (entering_relay) {
-    ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, keeping "
-                                      << self_state.grid_ids_.size()
-                                      << " previous grids available for handoff and replanning immediately.");
+    const size_t released_grid_count = self_state.grid_ids_.size();
+    relay_suspended_grid_ids_ = self_state.grid_ids_;
+    self_state.grid_ids_.clear();
+    ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, releasing "
+                                      << released_grid_count
+                                      << " grids and replanning immediately.");
     self_state.recent_attempt_time_ = ros::Time::now().toSec();
     expl_manager_->ed_->last_grid_ids_.clear();
     expl_manager_->ed_->reallocated_ = true;
@@ -973,6 +976,9 @@ void FastExplorationFSM::droneStateTimerCallback(const ros::TimerEvent& e) {
   state.stamp_ = ros::Time::now().toSec();
   state.relay_role_ = current_role_;
   state.task_assignable_ = (current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY);
+  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
+    state.grid_ids_.clear();
+  }
   msg.pos = { float(state.pos_[0]), float(state.pos_[1]), float(state.pos_[2]) };
   msg.vel = { float(state.vel_[0]), float(state.vel_[1]), float(state.vel_[2]) };
   msg.yaw = state.yaw_;
@@ -1187,9 +1193,13 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   const bool accept_idle_activation =
       activated_idle_agent && max_cost_reduction > 1.0 &&
       total_cost_increase <= max_cost_reduction + 1.0;
+  const bool accept_aggressive_reactivation =
+      fd_->aggressive_reassign_requested_ && state1.grid_ids_.empty() &&
+      !ego_ids.empty() && activated_idle_agent;
   std::cout << "cur cost : " << cur_app1 << ", " << cur_app2 << ", " << cur_total_cost
             << std::endl;
-  if (cur_total_cost > prev_total_cost + 0.1 && !accept_idle_activation) {
+  if (cur_total_cost > prev_total_cost + 0.1 &&
+      !accept_idle_activation && !accept_aggressive_reactivation) {
     ROS_ERROR("Larger cost after reallocation");
     if (state_ != WAIT_TRIGGER) {
       return;
@@ -1199,6 +1209,10 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
     ROS_WARN_STREAM("Accept pair opt with higher total cost because it activates an idle drone: "
                     << "prev_total=" << prev_total_cost << ", cur_total=" << cur_total_cost
                     << ", prev_max=" << prev_max_cost << ", cur_max=" << cur_max_cost);
+  } else if (accept_aggressive_reactivation) {
+    ROS_WARN_STREAM("Accept pair opt with higher total cost to reactivate drone " << getId()
+                    << " after relay release: prev_total=" << prev_total_cost
+                    << ", cur_total=" << cur_total_cost);
   }
 
   if (!state1.grid_ids_.empty() && !ego_ids.empty() &&
@@ -1291,30 +1305,22 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   self_state.relay_role_ = current_role_;
   self_state.task_assignable_ = true;
 
-  std::unordered_set<int> claimed_by_peers;
-  for (int i = 0; i < states.size(); ++i) {
-    const int agent_id = i + 1;
-    if (agent_id == getId()) continue;
-    const auto& peer = states[i];
-    if (!peer.task_assignable_) continue;
-    if (now_sec - peer.stamp_ > kPeerStateFreshnessSec) continue;
-    for (const int grid_id : peer.grid_ids_) {
-      claimed_by_peers.insert(grid_id);
+  vector<int> recoverable_grid_ids;
+  if (!relay_suspended_grid_ids_.empty()) {
+    vector<int> actives, missed;
+    expl_manager_->hgrid_->getActiveGrids(actives);
+    findUnallocated(actives, missed);
+    std::unordered_set<int> missed_set(missed.begin(), missed.end());
+    recoverable_grid_ids.reserve(relay_suspended_grid_ids_.size());
+    for (const int grid_id : relay_suspended_grid_ids_) {
+      if (missed_set.find(grid_id) != missed_set.end()) {
+        recoverable_grid_ids.push_back(grid_id);
+      }
     }
   }
-
-  vector<int> recovered_grid_ids;
-  recovered_grid_ids.reserve(self_state.grid_ids_.size());
-  size_t handed_off_grid_count = 0;
-  for (const int grid_id : self_state.grid_ids_) {
-    if (claimed_by_peers.find(grid_id) != claimed_by_peers.end()) {
-      ++handed_off_grid_count;
-      continue;
-    }
-    recovered_grid_ids.push_back(grid_id);
-  }
-
-  self_state.grid_ids_ = recovered_grid_ids;
+  const size_t handed_off_grid_count =
+      relay_suspended_grid_ids_.size() - recoverable_grid_ids.size();
+  self_state.grid_ids_ = recoverable_grid_ids;
   self_state.recent_attempt_time_ = now_sec;
   expl_manager_->ed_->last_grid_ids_.clear();
   expl_manager_->ed_->reallocated_ = true;
@@ -1325,11 +1331,14 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   fd_->last_check_frontier_time_ = now;
   fd_->consecutive_plan_failures_ = 0;
 
-  ROS_WARN_STREAM("[Relay]: Drone " << getId() << " leaving relay mode with "
-                  << self_state.grid_ids_.size() << " grids recovered and "
-                  << handed_off_grid_count << " already handed off.");
+  if (!recoverable_grid_ids.empty()) {
+    relay_suspended_grid_ids_.clear();
+    fd_->aggressive_reassign_requested_ = false;
+    ROS_WARN_STREAM("[Relay]: Drone " << getId()
+                    << " leaving relay mode and restoring " << recoverable_grid_ids.size()
+                    << " suspended grids; " << handed_off_grid_count
+                    << " already handed off.");
 
-  if (!self_state.grid_ids_.empty()) {
     if (state_ == WAIT_TRIGGER && fd_->have_odom_) {
       fd_->trigger_ = true;
       fd_->start_pos_ = fd_->odom_pos_;
@@ -1340,6 +1349,11 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
     }
     return;
   }
+
+  relay_suspended_grid_ids_.clear();
+  self_state.grid_ids_.clear();
+  ROS_WARN_STREAM("[Relay]: Drone " << getId()
+                  << " leaving relay mode with no recoverable suspended grids; requesting fresh assignment.");
 
   fd_->aggressive_reassign_requested_ = true;
   if (tryClaimUnallocatedGrids(reason, true)) {
