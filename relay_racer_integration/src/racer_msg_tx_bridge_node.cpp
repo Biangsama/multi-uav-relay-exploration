@@ -76,6 +76,25 @@ class RacerMsgTxBridgeNode {
     families_.push_back({"relay_peer_state", "/relay_integration/relay_peer_state"});
     families_.push_back({"relay_proposal", "/relay_integration/relay_proposal"});
     families_.push_back({"relay_task_state", "/relay_integration/relay_task_state"});
+    families_.push_back({"component_state", "/swarm_expl/component_state"});
+    families_.push_back({"allocation_request", "/swarm_expl/allocation_request"});
+    families_.push_back({"assignment_plan", "/swarm_expl/assignment_plan"});
+    families_.push_back({"assignment_ack", "/swarm_expl/assignment_ack"});
+    families_.push_back({"assignment_commit", "/swarm_expl/assignment_commit"});
+    families_.push_back({"release_request", "/swarm_expl/release_request"});
+  }
+
+  uint32_t transportPriorityForFamily(const std::string& family) const {
+    if (family == "chunk_data") {
+      return 0;
+    }
+    if (family == "chunk_stamps") {
+      return 1;
+    }
+    if (family == "swarm_traj") {
+      return 5;
+    }
+    return 10;
   }
 
   void messageCallback(const topic_tools::ShapeShifter::ConstPtr& msg,
@@ -100,6 +119,7 @@ class RacerMsgTxBridgeNode {
     wrapper.set_network_tx_id(static_cast<uint32_t>(src_id));
     wrapper.set_relay_hop_count(0);
     wrapper.set_max_relay_hops(static_cast<uint32_t>(std::max(0, default_max_relay_hops_)));
+    wrapper.set_transport_priority(transportPriorityForFamily(family));
 
     if (shouldTrace(wrapper)) {
       traceWrapper("tx_bridge_wrap", wrapper);
@@ -152,6 +172,7 @@ class RacerMsgTxBridgeNode {
                     << " network_tx_id=" << wrapper.network_tx_id()
                     << " relay_hop_count=" << wrapper.relay_hop_count()
                     << " max_relay_hops=" << wrapper.max_relay_hops()
+                    << " transport_priority=" << wrapper.transport_priority()
                     << " ros_datatype=" << wrapper.ros_datatype()
                     << " payload_bytes=" << wrapper.ros_payload().size()
                     << " stamp_us=" << wrapper.stamp_us());

@@ -16,4 +16,5 @@ message RacerSwarmMsg {
   uint32 network_tx_id = 11;   // current ns3 transmitter, defaults to src_id
   uint32 relay_hop_count = 12; // explicit relay forwards already applied
   uint32 max_relay_hops = 13;  // forwarding budget, 0 disables relay forwarding
+  uint32 transport_priority = 14; // higher means more urgent control traffic
 }

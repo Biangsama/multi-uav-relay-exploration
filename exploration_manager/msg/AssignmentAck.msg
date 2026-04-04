@@ -1,0 +1,9 @@
+uint64 component_epoch
+int32 leader_id
+int32 grid_id
+int32 owner_id
+uint64 owner_version
+uint64 txn_id
+bool accept
+string reason
+float64 stamp

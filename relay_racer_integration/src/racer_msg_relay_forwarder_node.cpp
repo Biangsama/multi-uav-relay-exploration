@@ -77,7 +77,8 @@ class RacerMsgRelayForwarderNode {
                              << " family=" << wrapper.family()
                              << " src_id=" << wrapper.src_id()
                              << " bridge_seq=" << wrapper.bridge_seq()
-                             << " hop_count=" << wrapper.relay_hop_count());
+                             << " hop_count=" << wrapper.relay_hop_count()
+                             << " transport_priority=" << wrapper.transport_priority());
   }
 
   bool isRelayActive(int agent_id) const {

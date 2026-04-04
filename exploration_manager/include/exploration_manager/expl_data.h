@@ -99,6 +99,16 @@ struct ExplorationData {
   vector<DroneState> swarm_state_;
   vector<double> pair_opt_stamps_, pair_opt_res_stamps_;
   vector<int> ego_ids_, other_ids_;
+  vector<vector<int>> observed_peer_grid_ids_;
+  vector<int> pending_grid_ids_;
+  vector<int> pending_claim_grid_ids_;
+  vector<int> pending_relay_recover_grid_ids_;
+  vector<int> pending_pair_opt_grid_ids_, pending_pair_opt_peer_grid_ids_;
+  vector<int> pending_release_grid_ids_;
+  vector<int> pending_invalidated_grid_ids_;
+  vector<int> pending_plan_fail_release_grid_ids_;
+  vector<int> pending_commit_grid_ids_, pending_commit_peer_grid_ids_;
+  vector<int> pending_relay_enter_release_grid_ids_;
   double pair_opt_stamp_;
   bool reallocated_, wait_response_;
 

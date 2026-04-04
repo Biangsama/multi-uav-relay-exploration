@@ -65,6 +65,12 @@ class RacerMsgRxBridgeNode {
     families_["relay_peer_state"] = "/relay_integration/relay_peer_state";
     families_["relay_proposal"] = "/relay_integration/relay_proposal";
     families_["relay_task_state"] = "/relay_integration/relay_task_state";
+    families_["component_state"] = "/swarm_expl/component_state";
+    families_["allocation_request"] = "/swarm_expl/allocation_request";
+    families_["assignment_plan"] = "/swarm_expl/assignment_plan";
+    families_["assignment_ack"] = "/swarm_expl/assignment_ack";
+    families_["assignment_commit"] = "/swarm_expl/assignment_commit";
+    families_["release_request"] = "/swarm_expl/release_request";
   }
 
   void bytesCallback(const std_msgs::UInt8MultiArrayConstPtr& msg) {
@@ -205,6 +211,7 @@ class RacerMsgRxBridgeNode {
                       << " network_tx_id=" << wrapper.network_tx_id()
                       << " relay_hop_count=" << wrapper.relay_hop_count()
                       << " max_relay_hops=" << wrapper.max_relay_hops()
+                      << " transport_priority=" << wrapper.transport_priority()
                       << " payload_bytes=" << wrapper.ros_payload().size());
       return;
     }
@@ -216,6 +223,7 @@ class RacerMsgRxBridgeNode {
                     << " network_tx_id=" << wrapper.network_tx_id()
                     << " relay_hop_count=" << wrapper.relay_hop_count()
                     << " max_relay_hops=" << wrapper.max_relay_hops()
+                    << " transport_priority=" << wrapper.transport_priority()
                     << " payload_bytes=" << wrapper.ros_payload().size()
                     << " " << extra);
   }

@@ -100,6 +100,13 @@ static inline double FriisReferenceLossDb(double frequency_hz, double reference_
     return 20.0 * std::log10(term);
 }
 
+static inline bool ShouldTraceOwnershipFamily(
+    const relay_racer_proto::RacerSwarmMsg& wrapper)
+{
+    return wrapper.family() == "allocation_request" ||
+           wrapper.family() == "release_request";
+}
+
 } // namespace
 
 class BasicWifiAdhoc : public Connector
@@ -1343,10 +1350,13 @@ void BasicWifiAdhoc::DrainPendingSwarmTx_()
             continue;
         }
 
+        relay_racer_proto::RacerSwarmMsg wrapper;
+        const bool parsed = wrapper.ParseFromString(item.bytes);
+        const bool trace_ownership = parsed && ShouldTraceOwnershipFamily(wrapper);
+
         if (trace_swarm_msg_enable_)
         {
-            relay_racer_proto::RacerSwarmMsg wrapper;
-            if (wrapper.ParseFromString(item.bytes) && ShouldTraceSwarmWrapper_(wrapper))
+            if (parsed && ShouldTraceSwarmWrapper_(wrapper))
             {
                 TraceSwarmWrapper_(
                     "net_broadcast_enqueue",
@@ -1355,7 +1365,27 @@ void BasicWifiAdhoc::DrainPendingSwarmTx_()
                         " batch_size=" + std::to_string(pending.size()));
             }
         }
+
+        if (trace_ownership)
+        {
+            ROS_INFO_STREAM("[SWARM_NET][enqueue_payload_call_begin] family=" << wrapper.family()
+                            << " src_id=" << wrapper.src_id()
+                            << " dst_id=" << wrapper.dst_id()
+                            << " network_tx_id=" << wrapper.network_tx_id()
+                            << " payload_bytes=" << wrapper.ros_payload().size()
+                            << " platform_src_id=" << item.platform_src_id);
+        }
         it->second->EnqueuePayload(item.bytes);
+        if (trace_ownership)
+        {
+            ROS_INFO_STREAM("[SWARM_NET][enqueue_payload_call_end] family=" << wrapper.family()
+                            << " src_id=" << wrapper.src_id()
+                            << " dst_id=" << wrapper.dst_id()
+                            << " network_tx_id=" << wrapper.network_tx_id()
+                            << " payload_bytes=" << wrapper.ros_payload().size()
+                            << " platform_src_id=" << item.platform_src_id
+                            << " call_returned=true");
+        }
     }
 }
 
@@ -2208,15 +2238,15 @@ void BasicWifiAdhoc::RequestCommandsClbk()
         return;
     }
 
-    while (!command_client_.exists() &&
-           !command_client_.waitForExistence(ros::Duration(1.0)))
+    // Do not block the only ROS callback thread while the controller service is absent.
+    // This node still needs to process swarm message bridge traffic in message-only setups.
+    if (!command_client_.exists())
     {
-        if (!ros::ok())
-        {
-            RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for the service. Exiting.");
-            return;
-        }
-        RCLCPP_WARN_STREAM(this->get_logger(), "Service " << command_client_.getService() << " not available, waiting again...");
+        ROS_WARN_THROTTLE(
+            1.0,
+            "Service %s not available, skipping command request this cycle.",
+            command_client_.getService().c_str());
+        return;
     }
 
     std::vector<dancers_msgs::AgentStruct> request_agents;

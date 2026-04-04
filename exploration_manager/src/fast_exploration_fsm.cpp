@@ -4,6 +4,12 @@
 #include <traj_utils/planning_visualization.h>
 
 #include <exploration_manager/fast_exploration_fsm.h>
+#include <exploration_manager/ComponentState.h>
+#include <exploration_manager/AssignmentPlan.h>
+#include <exploration_manager/AssignmentAck.h>
+#include <exploration_manager/AssignmentCommit.h>
+#include <exploration_manager/AllocationRequest.h>
+#include <exploration_manager/ReleaseRequest.h>
 #include <exploration_manager/expl_data.h>
 #include <exploration_manager/HGrid.h>
 #include <exploration_manager/GridTour.h>
@@ -20,6 +26,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <unordered_set>
 
 using Eigen::Vector4d;
@@ -85,6 +92,19 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
   have_relay_target_ = false;
   relay_target_.setZero();
   relay_yaw_ = 0.0;
+  component_epoch_ = 0;
+  component_leader_id_ = 0;
+  component_members_initialized_ = false;
+  last_component_member_ids_.clear();
+  pending_assignment_active_ = false;
+  pending_assignment_txn_id_ = 0;
+  pending_assignment_component_epoch_ = 0;
+  pending_assignment_leader_id_ = 0;
+  pending_assignment_grid_id_ = 0;
+  pending_assignment_owner_id_ = 0;
+  pending_assignment_owner_version_ = 0;
+  next_allocation_request_txn_id_ = 1;
+  next_release_request_txn_id_ = 1;
 
   /* Ros sub, pub and timer */
   exec_timer_ = nh.createTimer(ros::Duration(0.01), &FastExplorationFSM::FSMCallback, this);
@@ -111,8 +131,20 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
       nh.advertise<exploration_manager::DroneState>("/swarm_expl/drone_state_send", 10);
   relay_task_state_pub_ =
       nh.advertise<relay_racer_integration::RelayTaskState>("/relay_integration/relay_task_state_send", 10);
+  component_state_pub_ =
+      nh.advertise<exploration_manager::ComponentState>("/swarm_expl/component_state_send", 10);
+  allocation_request_pub_ =
+      nh.advertise<exploration_manager::AllocationRequest>("/swarm_expl/allocation_request", 10);
+  release_request_pub_ =
+      nh.advertise<exploration_manager::ReleaseRequest>("/swarm_expl/release_request", 10);
+  assignment_ack_pub_ =
+      nh.advertise<exploration_manager::AssignmentAck>("/swarm_expl/assignment_ack", 10);
   drone_state_sub_ = nh.subscribe(
       "/swarm_expl/drone_state_recv", 10, &FastExplorationFSM::droneStateMsgCallback, this);
+  assignment_plan_sub_ = nh.subscribe(
+      "/swarm_expl/assignment_plan", 10, &FastExplorationFSM::assignmentPlanCallback, this);
+  assignment_commit_sub_ = nh.subscribe(
+      "/swarm_expl/assignment_commit", 10, &FastExplorationFSM::assignmentCommitCallback, this);
 
   opt_timer_ = nh.createTimer(ros::Duration(0.05), &FastExplorationFSM::optTimerCallback, this);
   opt_pub_ = nh.advertise<exploration_manager::PairOpt>("/swarm_expl/pair_opt_send", 10);
@@ -138,6 +170,98 @@ int FastExplorationFSM::getId() {
   return expl_manager_->ep_->drone_id_;
 }
 
+void FastExplorationFSM::getEffectiveSelfGridIds(vector<int>& grid_ids) const {
+  grid_ids.clear();
+  if (!expl_manager_ || !expl_manager_->ed_ || !expl_manager_->ep_) {
+    return;
+  }
+  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
+    return;
+  }
+
+  const auto& self_state = expl_manager_->ed_->swarm_state_[expl_manager_->ep_->drone_id_ - 1];
+  const auto& pending_release_ids = expl_manager_->ed_->pending_release_grid_ids_;
+  if (pending_release_ids.empty()) {
+    grid_ids = self_state.grid_ids_;
+    return;
+  }
+
+  unordered_set<int> pending_release_map(
+      pending_release_ids.begin(), pending_release_ids.end());
+  for (const int grid_id : self_state.grid_ids_) {
+    if (pending_release_map.find(grid_id) == pending_release_map.end()) {
+      grid_ids.push_back(grid_id);
+    }
+  }
+}
+
+void FastExplorationFSM::stagePendingSelfRelease(const vector<int>& grid_ids) {
+  if (!expl_manager_ || !expl_manager_->ed_ || grid_ids.empty()) {
+    return;
+  }
+
+  auto& pending_release_ids = expl_manager_->ed_->pending_release_grid_ids_;
+  unordered_set<int> pending_release_map(
+      pending_release_ids.begin(), pending_release_ids.end());
+  for (const int grid_id : grid_ids) {
+    if (pending_release_map.insert(grid_id).second) {
+      pending_release_ids.push_back(grid_id);
+    }
+  }
+}
+
+void FastExplorationFSM::clearPendingAssignmentTxn() {
+  pending_assignment_active_ = false;
+  pending_assignment_txn_id_ = 0;
+  pending_assignment_component_epoch_ = 0;
+  pending_assignment_leader_id_ = 0;
+  pending_assignment_grid_id_ = 0;
+  pending_assignment_owner_id_ = 0;
+  pending_assignment_owner_version_ = 0;
+}
+
+bool FastExplorationFSM::publishAllocationRequest(const string& reason) {
+  if (!component_members_initialized_ || component_leader_id_ <= 0) {
+    return false;
+  }
+
+  exploration_manager::AllocationRequest request_msg;
+  request_msg.component_epoch = component_epoch_;
+  request_msg.leader_id = component_leader_id_;
+  request_msg.requester_id = getId();
+  request_msg.txn_id = next_allocation_request_txn_id_++;
+  request_msg.reason = reason;
+  request_msg.stamp = ros::Time::now().toSec();
+  if (expl_manager_ && expl_manager_->ed_) {
+    request_msg.grid_ids = expl_manager_->ed_->pending_claim_grid_ids_;
+  }
+  allocation_request_pub_.publish(request_msg);
+  return true;
+}
+
+bool FastExplorationFSM::publishReleaseRequest(const vector<int>& grid_ids, const string& reason) {
+  if (!component_members_initialized_ || component_leader_id_ <= 0 || grid_ids.empty()) {
+    return false;
+  }
+
+  exploration_manager::ReleaseRequest request_msg;
+  request_msg.component_epoch = component_epoch_;
+  request_msg.leader_id = component_leader_id_;
+  request_msg.grid_ids = grid_ids;
+  request_msg.txn_id = next_release_request_txn_id_++;
+  request_msg.reason = reason;
+  request_msg.stamp = ros::Time::now().toSec();
+  request_msg.owner_ids.assign(grid_ids.size(), getId());
+  request_msg.owner_versions.reserve(grid_ids.size());
+  for (const int grid_id : grid_ids) {
+    const auto version_it = component_owner_versions_.find(grid_id);
+    request_msg.owner_versions.push_back(
+        version_it == component_owner_versions_.end() ? 1 : version_it->second);
+  }
+  release_request_pub_.publish(request_msg);
+  return true;
+}
+
 bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
   if (!fd_->have_odom_ || current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
     return false;
@@ -158,9 +282,13 @@ bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
   const bool frontier_changed =
       expl_manager_->frontier_finder_ && expl_manager_->frontier_finder_->hasFrontierStructureChange();
 
-  auto& self_state = expl_manager_->ed_->swarm_state_[getId() - 1];
-  const int prev_grid_count = static_cast<int>(self_state.grid_ids_.size());
+  auto ed = expl_manager_->ed_;
+  auto& self_state = ed->swarm_state_[getId() - 1];
+  vector<int> effective_self_grid_ids;
+  getEffectiveSelfGridIds(effective_self_grid_ids);
+  const int prev_grid_count = static_cast<int>(effective_self_grid_ids.size());
   vector<int> active_grids;
+  vector<int> remaining_grid_ids;
   expl_manager_->hgrid_->getActiveGrids(active_grids);
   if (prev_grid_count > 0) {
     unordered_map<int, char> active_grid_map;
@@ -168,14 +296,16 @@ bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
       active_grid_map[grid_id] = 1;
     }
 
-    vector<int> remaining_grid_ids;
-    remaining_grid_ids.reserve(self_state.grid_ids_.size());
+    vector<int> invalidated_grid_ids;
+    remaining_grid_ids.reserve(effective_self_grid_ids.size());
+    invalidated_grid_ids.reserve(effective_self_grid_ids.size());
     vector<int> single_grid(1, -1);
     vector<int> frontier_ids;
     int removed_inactive_grid_count = 0;
     int removed_frontierless_grid_count = 0;
-    for (const int grid_id : self_state.grid_ids_) {
+    for (const int grid_id : effective_self_grid_ids) {
       if (active_grid_map.find(grid_id) == active_grid_map.end()) {
+        invalidated_grid_ids.push_back(grid_id);
         ++removed_inactive_grid_count;
         continue;
       }
@@ -185,6 +315,7 @@ bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
         single_grid[0] = grid_id;
         expl_manager_->hgrid_->getFrontiersInGrid(single_grid, frontier_ids);
         if (frontier_ids.empty()) {
+          invalidated_grid_ids.push_back(grid_id);
           ++removed_frontierless_grid_count;
           continue;
         }
@@ -193,20 +324,23 @@ bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
       remaining_grid_ids.push_back(grid_id);
     }
 
-    if (remaining_grid_ids.size() != self_state.grid_ids_.size()) {
-      self_state.grid_ids_.swap(remaining_grid_ids);
-      expl_manager_->ed_->last_grid_ids_.clear();
-      expl_manager_->ed_->reallocated_ = true;
-      expl_manager_->ed_->wait_response_ = false;
-      ROS_INFO_STREAM("[FSM]: Drone " << getId() << " dropped "
+    if (!invalidated_grid_ids.empty()) {
+      ed->pending_invalidated_grid_ids_ = invalidated_grid_ids;
+      stagePendingSelfRelease(invalidated_grid_ids);
+      publishReleaseRequest(ed->pending_invalidated_grid_ids_, "remoteMapInvalidation");
+      ROS_INFO_STREAM("[FSM]: Drone " << getId() << " staged release of "
                       << (removed_inactive_grid_count + removed_frontierless_grid_count)
                       << " stale grids after remote map update (inactive="
                       << removed_inactive_grid_count << ", frontierless="
                       << removed_frontierless_grid_count << ").");
+    } else {
+      ed->pending_invalidated_grid_ids_.clear();
     }
+  } else {
+    ed->pending_invalidated_grid_ids_.clear();
   }
 
-  const bool lost_assignment_after_prune = prev_grid_count > 0 && self_state.grid_ids_.empty();
+  const bool lost_assignment_after_prune = prev_grid_count > 0 && remaining_grid_ids.empty();
   if (lost_assignment_after_prune) {
     fd_->aggressive_reassign_requested_ = true;
   }
@@ -215,7 +349,7 @@ bool FastExplorationFSM::handleRemoteMapUpdate(const ros::Time& now) {
                   << " refreshed frontier after remote map update, status="
                   << frontier_status << ", changed=" << frontier_changed
                   << ", active_grids=" << active_grids.size()
-                  << ", assigned_grids=" << self_state.grid_ids_.size());
+                  << ", assigned_grids=" << remaining_grid_ids.size());
 
   if (state_ == WAIT_TRIGGER && fp_->auto_start_ && frontier_status != 0) {
     fd_->trigger_ = true;
@@ -347,16 +481,18 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
 
         if (current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY &&
             fd_->consecutive_plan_failures_ >= kPlanFailureReleaseThreshold) {
-          auto& self_state = expl_manager_->ed_->swarm_state_[getId() - 1];
-          const size_t released_grid_count = self_state.grid_ids_.size();
-          self_state.grid_ids_.clear();
-          expl_manager_->ed_->last_grid_ids_.clear();
-          expl_manager_->ed_->reallocated_ = true;
-          expl_manager_->ed_->wait_response_ = false;
+          auto ed = expl_manager_->ed_;
+          vector<int> effective_self_grid_ids;
+          getEffectiveSelfGridIds(effective_self_grid_ids);
+          const size_t released_grid_count = effective_self_grid_ids.size();
+          ed->pending_plan_fail_release_grid_ids_ = effective_self_grid_ids;
+          stagePendingSelfRelease(effective_self_grid_ids);
+          publishReleaseRequest(ed->pending_plan_fail_release_grid_ids_, "repeatedPlanFailure");
           fd_->last_check_frontier_time_ = ros::Time::now();
           fd_->consecutive_plan_failures_ = 0;
 
-          ROS_WARN_STREAM("[FSM]: Drone " << getId() << " released " << released_grid_count
+          ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged release of "
+                          << released_grid_count
                           << " grids after repeated plan failures and will request reassignment.");
           transitState(IDLE, "repeatedPlanFail");
           requestAggressiveReassign("repeated plan failures");
@@ -918,12 +1054,23 @@ void FastExplorationFSM::relayRoleCmdCallback(
       current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY;
 
   if (entering_relay) {
+    auto ed = expl_manager_->ed_;
     const size_t released_grid_count = self_state.grid_ids_.size();
     relay_suspended_grid_ids_ = self_state.grid_ids_;
+    ed->pending_relay_enter_release_grid_ids_ = relay_suspended_grid_ids_;
+    stagePendingSelfRelease(relay_suspended_grid_ids_);
+    publishReleaseRequest(ed->pending_relay_enter_release_grid_ids_, "relayEnter");
+    ed->pending_claim_grid_ids_.clear();
+    ed->pending_relay_recover_grid_ids_.clear();
+    ed->pending_pair_opt_grid_ids_.clear();
+    ed->pending_pair_opt_peer_grid_ids_.clear();
+    ed->pending_commit_grid_ids_.clear();
+    ed->pending_commit_peer_grid_ids_.clear();
+    ed->pending_grid_ids_.clear();
     self_state.grid_ids_.clear();
     ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, releasing "
                                       << released_grid_count
-                                      << " grids and replanning immediately.");
+                                      << " grids, staging relay-enter release, and replanning immediately.");
     self_state.recent_attempt_time_ = ros::Time::now().toSec();
     expl_manager_->ed_->last_grid_ids_.clear();
     expl_manager_->ed_->reallocated_ = true;
@@ -976,13 +1123,12 @@ void FastExplorationFSM::droneStateTimerCallback(const ros::TimerEvent& e) {
   state.stamp_ = ros::Time::now().toSec();
   state.relay_role_ = current_role_;
   state.task_assignable_ = (current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY);
-  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
-    state.grid_ids_.clear();
-  }
+  vector<int> published_grid_ids;
+  getEffectiveSelfGridIds(published_grid_ids);
   msg.pos = { float(state.pos_[0]), float(state.pos_[1]), float(state.pos_[2]) };
   msg.vel = { float(state.vel_[0]), float(state.vel_[1]), float(state.vel_[2]) };
   msg.yaw = state.yaw_;
-  for (auto id : state.grid_ids_) msg.grid_ids.push_back(id);
+  for (auto id : published_grid_ids) msg.grid_ids.push_back(id);
   msg.recent_attempt_time = state.recent_attempt_time_;
   msg.stamp = state.stamp_;
   msg.relay_role = state.relay_role_;
@@ -994,7 +1140,7 @@ void FastExplorationFSM::droneStateTimerCallback(const ros::TimerEvent& e) {
   relay_task_msg.stamp = msg.stamp;
   relay_task_msg.relay_role = msg.relay_role;
   relay_task_msg.task_assignable = msg.task_assignable;
-  relay_task_msg.grid_count = static_cast<int32_t>(state.grid_ids_.size());
+  relay_task_msg.grid_count = static_cast<int32_t>(published_grid_ids.size());
   relay_task_msg.last_safety_replan_stamp =
       fd_->last_safety_replan_time_.isZero() ? 0.0 : fd_->last_safety_replan_time_.toSec();
   relay_task_msg.last_plan_fail_stamp =
@@ -1003,8 +1149,225 @@ void FastExplorationFSM::droneStateTimerCallback(const ros::TimerEvent& e) {
       fd_->last_plan_success_time_.isZero() ? 0.0 : fd_->last_plan_success_time_.toSec();
   relay_task_msg.consecutive_plan_failures = fd_->consecutive_plan_failures_;
 
+  exploration_manager::ComponentState component_msg;
+  component_msg.stamp = msg.stamp;
+  component_msg.source_id = getId();
+
+  const double now_sec = msg.stamp;
+  const auto& states = expl_manager_->ed_->swarm_state_;
+  const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
+  vector<int> component_member_ids;
+  std::map<int, int> owner_by_grid;
+  vector<int> active_grids;
+  expl_manager_->hgrid_->getActiveGrids(active_grids);
+  for (int i = 0; i < static_cast<int>(states.size()); ++i) {
+    const int agent_id = i + 1;
+    const auto& candidate = states[i];
+    const bool self_visible = (agent_id == getId());
+    const bool peer_visible = !self_visible && candidate.stamp_ > 1e-4 &&
+                              now_sec - candidate.stamp_ <= kPeerStateFreshnessSec;
+    if (!self_visible && !peer_visible) {
+      continue;
+    }
+    if (!candidate.task_assignable_ ||
+        candidate.relay_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
+      continue;
+    }
+
+    component_member_ids.push_back(agent_id);
+    const vector<int>* owner_grid_ids = &candidate.grid_ids_;
+    if (self_visible) {
+      owner_grid_ids = &published_grid_ids;
+    } else if (i < static_cast<int>(observed_peer_grid_ids.size()) && candidate.stamp_ > 1e-4) {
+      owner_grid_ids = &observed_peer_grid_ids[i];
+    }
+
+    for (const int grid_id : *owner_grid_ids) {
+      owner_by_grid.emplace(grid_id, agent_id);
+    }
+  }
+
+  if (!component_members_initialized_) {
+    last_component_member_ids_ = component_member_ids;
+    component_members_initialized_ = true;
+  } else if (last_component_member_ids_ != component_member_ids) {
+    ++component_epoch_;
+    last_component_member_ids_ = component_member_ids;
+  }
+
+  component_msg.component_epoch = component_epoch_;
+  component_msg.leader_id = component_member_ids.empty() ? 0 : component_member_ids.front();
+  component_leader_id_ = component_msg.leader_id;
+  if (pending_assignment_active_ &&
+      (pending_assignment_component_epoch_ != component_msg.component_epoch ||
+       pending_assignment_leader_id_ != component_leader_id_)) {
+    clearPendingAssignmentTxn();
+  }
+
+  std::unordered_map<int, int> next_component_owner_ids;
+  std::unordered_map<int, uint64_t> next_component_owner_versions;
+  for (const auto& owner_entry : owner_by_grid) {
+    const int grid_id = owner_entry.first;
+    const int owner_id = owner_entry.second;
+    uint64_t owner_version = 1;
+    const auto last_owner_it = component_owner_ids_.find(grid_id);
+    const auto last_version_it = component_owner_versions_.find(grid_id);
+    if (last_owner_it != component_owner_ids_.end() && last_version_it != component_owner_versions_.end()) {
+      owner_version = last_version_it->second;
+      if (last_owner_it->second != owner_id) {
+        owner_version += 1;
+      }
+    }
+
+    next_component_owner_ids[grid_id] = owner_id;
+    next_component_owner_versions[grid_id] = owner_version;
+    component_msg.grid_ids.push_back(grid_id);
+    component_msg.owner_ids.push_back(owner_id);
+    component_msg.owner_versions.push_back(owner_version);
+  }
+  component_owner_ids_.swap(next_component_owner_ids);
+  component_owner_versions_.swap(next_component_owner_versions);
+
+  std::unordered_set<int> owned_grid_ids;
+  for (const auto& owner_entry : owner_by_grid) {
+    owned_grid_ids.insert(owner_entry.first);
+  }
+  for (const int grid_id : active_grids) {
+    if (owned_grid_ids.find(grid_id) == owned_grid_ids.end()) {
+      component_msg.free_grid_ids.push_back(grid_id);
+    }
+  }
+
   drone_state_pub_.publish(msg);
   relay_task_state_pub_.publish(relay_task_msg);
+  component_state_pub_.publish(component_msg);
+}
+
+void FastExplorationFSM::assignmentPlanCallback(
+    const exploration_manager::AssignmentPlanConstPtr& msg) {
+  if (msg->txn_id == 0 || msg->component_epoch != component_epoch_ ||
+      msg->leader_id != component_leader_id_) {
+    return;
+  }
+
+  const size_t entry_count = std::min(
+      msg->grid_ids.size(), std::min(msg->owner_ids.size(), msg->owner_versions.size()));
+  int match_index = -1;
+  for (size_t i = 0; i < entry_count; ++i) {
+    if (msg->owner_ids[i] == getId()) {
+      match_index = static_cast<int>(i);
+      break;
+    }
+  }
+  if (match_index < 0) {
+    return;
+  }
+
+  const int grid_id = msg->grid_ids[match_index];
+  const uint64_t owner_version = msg->owner_versions[match_index];
+  if (pending_assignment_active_) {
+    if (pending_assignment_txn_id_ != msg->txn_id ||
+        pending_assignment_component_epoch_ != msg->component_epoch ||
+        pending_assignment_leader_id_ != msg->leader_id ||
+        pending_assignment_grid_id_ != grid_id ||
+        pending_assignment_owner_id_ != getId() ||
+        pending_assignment_owner_version_ != owner_version) {
+      return;
+    }
+  } else {
+    pending_assignment_active_ = true;
+    pending_assignment_txn_id_ = msg->txn_id;
+    pending_assignment_component_epoch_ = msg->component_epoch;
+    pending_assignment_leader_id_ = msg->leader_id;
+    pending_assignment_grid_id_ = grid_id;
+    pending_assignment_owner_id_ = getId();
+    pending_assignment_owner_version_ = owner_version;
+  }
+
+  exploration_manager::AssignmentAck ack_msg;
+  ack_msg.component_epoch = msg->component_epoch;
+  ack_msg.leader_id = msg->leader_id;
+  ack_msg.grid_id = grid_id;
+  ack_msg.owner_id = getId();
+  ack_msg.owner_version = owner_version;
+  ack_msg.txn_id = msg->txn_id;
+  ack_msg.accept = true;
+  ack_msg.reason = msg->reason;
+  ack_msg.stamp = ros::Time::now().toSec();
+  assignment_ack_pub_.publish(ack_msg);
+}
+
+void FastExplorationFSM::assignmentCommitCallback(
+    const exploration_manager::AssignmentCommitConstPtr& msg) {
+  if (!pending_assignment_active_ || msg->txn_id == 0 ||
+      msg->component_epoch != component_epoch_ || msg->leader_id != component_leader_id_ ||
+      msg->txn_id != pending_assignment_txn_id_ ||
+      msg->component_epoch != pending_assignment_component_epoch_ ||
+      msg->leader_id != pending_assignment_leader_id_) {
+    return;
+  }
+
+  const size_t entry_count = std::min(
+      msg->grid_ids.size(), std::min(msg->owner_ids.size(), msg->owner_versions.size()));
+  bool matched_commit = false;
+  for (size_t i = 0; i < entry_count; ++i) {
+    if (msg->grid_ids[i] == pending_assignment_grid_id_ &&
+        msg->owner_ids[i] == pending_assignment_owner_id_ &&
+        msg->owner_versions[i] == pending_assignment_owner_version_) {
+      matched_commit = true;
+      break;
+    }
+  }
+  if (!matched_commit) {
+    return;
+  }
+
+  auto ed = expl_manager_->ed_;
+  auto& self_state = ed->swarm_state_[getId() - 1];
+  const vector<int> prev_self_grid_ids = self_state.grid_ids_;
+  if (std::find(self_state.grid_ids_.begin(), self_state.grid_ids_.end(),
+          pending_assignment_grid_id_) == self_state.grid_ids_.end()) {
+    self_state.grid_ids_.push_back(pending_assignment_grid_id_);
+  }
+
+  auto erase_grid = [&](vector<int>& grid_ids) {
+    grid_ids.erase(std::remove(grid_ids.begin(), grid_ids.end(), pending_assignment_grid_id_),
+        grid_ids.end());
+  };
+  erase_grid(ed->pending_grid_ids_);
+  erase_grid(ed->pending_claim_grid_ids_);
+  erase_grid(ed->pending_relay_recover_grid_ids_);
+  erase_grid(ed->pending_pair_opt_grid_ids_);
+  erase_grid(ed->pending_release_grid_ids_);
+  erase_grid(ed->pending_invalidated_grid_ids_);
+  erase_grid(ed->pending_plan_fail_release_grid_ids_);
+  erase_grid(ed->pending_commit_grid_ids_);
+  erase_grid(ed->pending_relay_enter_release_grid_ids_);
+
+  ed->last_grid_ids_.clear();
+  ed->reallocated_ = true;
+  ed->wait_response_ = false;
+
+  const bool self_assignment_changed = prev_self_grid_ids != self_state.grid_ids_;
+  const bool need_immediate_replan =
+      needsImmediateAssignmentReplan(prev_self_grid_ids, self_state.grid_ids_, expl_manager_);
+
+  clearPendingAssignmentTxn();
+
+  if (!self_assignment_changed || self_state.grid_ids_.empty()) {
+    return;
+  }
+
+  if ((state_ == IDLE || state_ == WAIT_TRIGGER) && fd_->have_odom_) {
+    fd_->trigger_ = true;
+    fd_->go_back_ = false;
+    fd_->static_state_ = true;
+    fd_->start_pos_ = fd_->odom_pos_;
+    transitState(PLAN_TRAJ, "assignmentCommitCallback");
+  } else if ((state_ == EXEC_TRAJ || state_ == PUB_TRAJ) && need_immediate_replan) {
+    replan_pub_.publish(std_msgs::Empty());
+    transitState(PLAN_TRAJ, "assignmentCommitCallback");
+  }
 }
 
 void FastExplorationFSM::droneStateMsgCallback(const exploration_manager::DroneStateConstPtr& msg) {
@@ -1024,8 +1387,11 @@ void FastExplorationFSM::droneStateMsgCallback(const exploration_manager::DroneS
   drone_state.pos_ = Eigen::Vector3d(msg->pos[0], msg->pos[1], msg->pos[2]);
   drone_state.vel_ = Eigen::Vector3d(msg->vel[0], msg->vel[1], msg->vel[2]);
   drone_state.yaw_ = msg->yaw;
-  drone_state.grid_ids_.clear();
-  for (auto id : msg->grid_ids) drone_state.grid_ids_.push_back(id);
+  auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
+  if (observed_peer_grid_ids.size() < expl_manager_->ed_->swarm_state_.size()) {
+    observed_peer_grid_ids.resize(expl_manager_->ed_->swarm_state_.size());
+  }
+  observed_peer_grid_ids[msg->drone_id - 1].assign(msg->grid_ids.begin(), msg->grid_ids.end());
   drone_state.stamp_ = msg->stamp;
   drone_state.recent_attempt_time_ = msg->recent_attempt_time;
   drone_state.relay_role_ = msg->relay_role;
@@ -1053,7 +1419,10 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY || !state1.task_assignable_) {
     return;
   }
-  if (state1.grid_ids_.empty() && tryClaimUnallocatedGrids("optTimerCallback", true)) {
+  vector<int> effective_self_grid_ids;
+  getEffectiveSelfGridIds(effective_self_grid_ids);
+  const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
+  if (effective_self_grid_ids.empty() && tryClaimUnallocatedGrids("optTimerCallback", true)) {
     return;
   }
   auto tn = ros::Time::now().toSec();
@@ -1071,7 +1440,7 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   int select_id = -1;
   double max_interval = -1.0;
   int best_peer_load = -1;
-  const bool self_idle = state1.grid_ids_.empty();
+  const bool self_idle = effective_self_grid_ids.empty();
   for (int i = 0; i < states.size(); ++i) {
     const int candidate_id = i + 1;
     if (candidate_id == getId()) continue;
@@ -1088,7 +1457,11 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
       continue;
     }
 
-    const int peer_load = static_cast<int>(states[i].grid_ids_.size());
+    const vector<int>& peer_grid_ids =
+        (i < static_cast<int>(observed_peer_grid_ids.size()) && states[i].stamp_ > 1e-4)
+            ? observed_peer_grid_ids[i]
+            : states[i].grid_ids_;
+    const int peer_load = static_cast<int>(peer_grid_ids.size());
     if (!have_missed && peer_load == 0 && self_idle) continue;
     if (!have_missed && peer_load == 0 && !self_idle) continue;
 
@@ -1125,8 +1498,12 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   // Do pairwise optimization with selected drone, allocate the union of their domiance grids
   unordered_map<int, char> opt_ids_map;
   auto& state2 = states[select_id - 1];
-  for (auto id : state1.grid_ids_) opt_ids_map[id] = 1;
-  for (auto id : state2.grid_ids_) opt_ids_map[id] = 1;
+  const vector<int>& selected_peer_grid_ids =
+      (select_id - 1 < static_cast<int>(observed_peer_grid_ids.size()) && state2.stamp_ > 1e-4)
+          ? observed_peer_grid_ids[select_id - 1]
+          : state2.grid_ids_;
+  for (auto id : effective_self_grid_ids) opt_ids_map[id] = 1;
+  for (auto id : selected_peer_grid_ids) opt_ids_map[id] = 1;
   vector<int> opt_ids;
   for (auto pair : opt_ids_map) opt_ids.push_back(pair.first);
 
@@ -1146,9 +1523,9 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   vector<int> first_ids1, second_ids1, first_ids2, second_ids2;
   if (state_ != WAIT_TRIGGER) {
     expl_manager_->hgrid_->getConsistentGrid(
-        state1.grid_ids_, state1.grid_ids_, first_ids1, second_ids1);
+        effective_self_grid_ids, effective_self_grid_ids, first_ids1, second_ids1);
     expl_manager_->hgrid_->getConsistentGrid(
-        state2.grid_ids_, state2.grid_ids_, first_ids2, second_ids2);
+        selected_peer_grid_ids, selected_peer_grid_ids, first_ids2, second_ids2);
   }
 
   auto t1 = ros::Time::now();
@@ -1160,9 +1537,9 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   double alloc_time = (ros::Time::now() - t1).toSec();
 
   std::cout << "Ego1  : ";
-  for (auto id : state1.grid_ids_) std::cout << id << ", ";
+  for (auto id : effective_self_grid_ids) std::cout << id << ", ";
   std::cout << "\nOther1: ";
-  for (auto id : state2.grid_ids_) std::cout << id << ", ";
+  for (auto id : selected_peer_grid_ids) std::cout << id << ", ";
   std::cout << "\nEgo2  : ";
   for (auto id : ego_ids) std::cout << id << ", ";
   std::cout << "\nOther2: ";
@@ -1171,9 +1548,9 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
 
   // Check results. When this pair-opt wakes an idle drone up, reducing the max per-drone
   // remaining workload is more important than keeping the summed path cost strictly smaller.
-  double prev_app1 = expl_manager_->computeGridPathCost(state1.pos_, state1.grid_ids_, first_ids1,
+  double prev_app1 = expl_manager_->computeGridPathCost(state1.pos_, effective_self_grid_ids, first_ids1,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
-  double prev_app2 = expl_manager_->computeGridPathCost(state2.pos_, state2.grid_ids_, first_ids2,
+  double prev_app2 = expl_manager_->computeGridPathCost(state2.pos_, selected_peer_grid_ids, first_ids2,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
   const double prev_total_cost = prev_app1 + prev_app2;
   const double prev_max_cost = std::max(prev_app1, prev_app2);
@@ -1185,7 +1562,8 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
   const double cur_total_cost = cur_app1 + cur_app2;
   const double cur_max_cost = std::max(cur_app1, cur_app2);
-  const int prev_active_agents = (!state1.grid_ids_.empty() ? 1 : 0) + (!state2.grid_ids_.empty() ? 1 : 0);
+  const int prev_active_agents = (!effective_self_grid_ids.empty() ? 1 : 0) +
+                                 (!selected_peer_grid_ids.empty() ? 1 : 0);
   const int cur_active_agents = (!ego_ids.empty() ? 1 : 0) + (!other_ids.empty() ? 1 : 0);
   const double total_cost_increase = cur_total_cost - prev_total_cost;
   const double max_cost_reduction = prev_max_cost - cur_max_cost;
@@ -1194,7 +1572,7 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
       activated_idle_agent && max_cost_reduction > 1.0 &&
       total_cost_increase <= max_cost_reduction + 1.0;
   const bool accept_aggressive_reactivation =
-      fd_->aggressive_reassign_requested_ && state1.grid_ids_.empty() &&
+      fd_->aggressive_reassign_requested_ && effective_self_grid_ids.empty() &&
       !ego_ids.empty() && activated_idle_agent;
   std::cout << "cur cost : " << cur_app1 << ", " << cur_app2 << ", " << cur_total_cost
             << std::endl;
@@ -1215,17 +1593,17 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
                     << ", cur_total=" << cur_total_cost);
   }
 
-  if (!state1.grid_ids_.empty() && !ego_ids.empty() &&
-      !expl_manager_->hgrid_->isConsistent(state1.grid_ids_[0], ego_ids[0])) {
+  if (!effective_self_grid_ids.empty() && !ego_ids.empty() &&
+      !expl_manager_->hgrid_->isConsistent(effective_self_grid_ids[0], ego_ids[0])) {
     ROS_ERROR("Path 1 inconsistent");
   }
-  if (!state2.grid_ids_.empty() && !other_ids.empty() &&
-      !expl_manager_->hgrid_->isConsistent(state2.grid_ids_[0], other_ids[0])) {
+  if (!selected_peer_grid_ids.empty() && !other_ids.empty() &&
+      !expl_manager_->hgrid_->isConsistent(selected_peer_grid_ids[0], other_ids[0])) {
     ROS_ERROR("Path 2 inconsistent");
   }
 
   // Update ego and other dominace grids
-  auto last_ids2 = state2.grid_ids_;
+  auto last_ids2 = selected_peer_grid_ids;
 
   // Send the result to selected drone and wait for confirmation
   exploration_manager::PairOpt opt;
@@ -1269,11 +1647,23 @@ void FastExplorationFSM::findUnallocated(const vector<int>& actives, vector<int>
 
   // Remove allocated ones. Grids currently held by an active relay stay available so other
   // explorers can pick them up through pair-opt.
-  for (const auto& state : expl_manager_->ed_->swarm_state_) {
+  vector<int> effective_self_grid_ids;
+  getEffectiveSelfGridIds(effective_self_grid_ids);
+  const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
+  for (int i = 0; i < static_cast<int>(expl_manager_->ed_->swarm_state_.size()); ++i) {
+    const auto& state = expl_manager_->ed_->swarm_state_[i];
     if (!state.task_assignable_) {
       continue;
     }
-    for (auto id : state.grid_ids_) {
+
+    const vector<int>* grid_ids = &state.grid_ids_;
+    if (i + 1 == getId()) {
+      grid_ids = &effective_self_grid_ids;
+    } else if (i < static_cast<int>(observed_peer_grid_ids.size()) && state.stamp_ > 1e-4) {
+      grid_ids = &observed_peer_grid_ids[i];
+    }
+
+    for (auto id : *grid_ids) {
       if (active_map.find(id) != active_map.end()) {
         active_map.erase(id);
       } else {
@@ -1293,6 +1683,7 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
     return;
   }
 
+  auto ed = expl_manager_->ed_;
   auto& states = expl_manager_->ed_->swarm_state_;
   auto& self_state = states[getId() - 1];
   const ros::Time now = ros::Time::now();
@@ -1320,11 +1711,8 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   }
   const size_t handed_off_grid_count =
       relay_suspended_grid_ids_.size() - recoverable_grid_ids.size();
-  self_state.grid_ids_ = recoverable_grid_ids;
+  ed->pending_relay_recover_grid_ids_ = recoverable_grid_ids;
   self_state.recent_attempt_time_ = now_sec;
-  expl_manager_->ed_->last_grid_ids_.clear();
-  expl_manager_->ed_->reallocated_ = true;
-  expl_manager_->ed_->wait_response_ = false;
   fd_->go_back_ = false;
   fd_->avoid_collision_ = false;
   fd_->static_state_ = true;
@@ -1332,33 +1720,31 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   fd_->consecutive_plan_failures_ = 0;
 
   if (!recoverable_grid_ids.empty()) {
-    relay_suspended_grid_ids_.clear();
     fd_->aggressive_reassign_requested_ = false;
     ROS_WARN_STREAM("[Relay]: Drone " << getId()
-                    << " leaving relay mode and restoring " << recoverable_grid_ids.size()
+                    << " leaving relay mode and staging " << recoverable_grid_ids.size()
                     << " suspended grids; " << handed_off_grid_count
-                    << " already handed off.");
+                    << " already handed off. Ownership is not applied yet.");
 
-    if (state_ == WAIT_TRIGGER && fd_->have_odom_) {
-      fd_->trigger_ = true;
-      fd_->start_pos_ = fd_->odom_pos_;
-      transitState(PLAN_TRAJ, reason);
-    } else if (state_ != INIT && state_ != FINISH && state_ != PLAN_TRAJ) {
-      replan_pub_.publish(std_msgs::Empty());
-      transitState(PLAN_TRAJ, reason);
+    if (state_ != INIT && state_ != IDLE) {
+      transitState(IDLE, reason);
     }
     return;
   }
 
-  relay_suspended_grid_ids_.clear();
-  self_state.grid_ids_.clear();
+  ed->pending_relay_recover_grid_ids_.clear();
   ROS_WARN_STREAM("[Relay]: Drone " << getId()
-                  << " leaving relay mode with no recoverable suspended grids; requesting fresh assignment.");
+                  << " leaving relay mode with no recoverable suspended grids; staging fresh assignment candidate.");
 
   fd_->aggressive_reassign_requested_ = true;
   if (tryClaimUnallocatedGrids(reason, true)) {
+    if (state_ != INIT && state_ != IDLE) {
+      transitState(IDLE, reason);
+    }
     return;
   }
+
+  publishAllocationRequest(std::string("relayExitNeedTask:") + reason);
 
   if (state_ != INIT && state_ != IDLE) {
     transitState(IDLE, reason);
@@ -1393,11 +1779,14 @@ bool FastExplorationFSM::tryClaimUnallocatedGrids(
   state1.relay_role_ = current_role_;
   state1.task_assignable_ = true;
 
-  if (require_empty_assignment && !state1.grid_ids_.empty()) {
+  vector<int> effective_self_grid_ids;
+  getEffectiveSelfGridIds(effective_self_grid_ids);
+  if (require_empty_assignment && !effective_self_grid_ids.empty()) {
     return false;
   }
 
   const ros::Time now = ros::Time::now();
+  const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
   const double retry_interval = std::max(0.2, std::min(fp_->idle_retry_interval_, 1.0));
   if (!fd_->last_idle_recovery_time_.isZero() &&
       (now - fd_->last_idle_recovery_time_).toSec() < retry_interval) {
@@ -1424,7 +1813,13 @@ bool FastExplorationFSM::tryClaimUnallocatedGrids(
     if (!candidate.task_assignable_) continue;
     if (agent_id != getId() && now_sec - candidate.stamp_ > kPeerStateFreshnessSec) continue;
     assignable_ids.push_back(agent_id);
-    if (candidate.grid_ids_.empty()) {
+    const vector<int>* candidate_grid_ids = &candidate.grid_ids_;
+    if (agent_id == getId()) {
+      candidate_grid_ids = &effective_self_grid_ids;
+    } else if (i < static_cast<int>(observed_peer_grid_ids.size()) && candidate.stamp_ > 1e-4) {
+      candidate_grid_ids = &observed_peer_grid_ids[i];
+    }
+    if (candidate_grid_ids->empty()) {
       idle_ids.push_back(agent_id);
     }
   }
@@ -1437,7 +1832,17 @@ bool FastExplorationFSM::tryClaimUnallocatedGrids(
   unordered_map<int, vector<int>> claimed_ids;
   unordered_map<int, int> assigned_loads;
   for (const int agent_id : candidate_ids) {
-    assigned_loads[agent_id] = static_cast<int>(states[agent_id - 1].grid_ids_.size());
+    if (agent_id == getId()) {
+      assigned_loads[agent_id] = static_cast<int>(effective_self_grid_ids.size());
+      continue;
+    }
+    const int peer_index = agent_id - 1;
+    const vector<int>* candidate_grid_ids = &states[peer_index].grid_ids_;
+    if (peer_index < static_cast<int>(observed_peer_grid_ids.size()) &&
+        states[peer_index].stamp_ > 1e-4) {
+      candidate_grid_ids = &observed_peer_grid_ids[peer_index];
+    }
+    assigned_loads[agent_id] = static_cast<int>(candidate_grid_ids->size());
   }
 
   for (const int grid_id : missed) {
@@ -1472,28 +1877,18 @@ bool FastExplorationFSM::tryClaimUnallocatedGrids(
     return false;
   }
 
-  state1.grid_ids_ = self_it->second;
+  auto ed = expl_manager_->ed_;
+  ed->pending_claim_grid_ids_ = self_it->second;
   state1.recent_attempt_time_ = now_sec;
-  expl_manager_->ed_->last_grid_ids_.clear();
-  expl_manager_->ed_->reallocated_ = true;
-  expl_manager_->ed_->wait_response_ = false;
   fd_->aggressive_reassign_requested_ = false;
   fd_->last_check_frontier_time_ = now;
 
-  ROS_WARN_STREAM("[FSM]: Drone " << getId() << " claimed " << state1.grid_ids_.size()
-                  << " missed grids after " << pos_call << ", active grids=" << actives.size()
-                  << ", missed grids=" << missed.size());
+  ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged claim candidate of "
+                  << ed->pending_claim_grid_ids_.size() << " missed grids after " << pos_call
+                  << ", active grids=" << actives.size() << ", missed grids=" << missed.size()
+                  << ". Ownership is not applied yet.");
 
-  if (state_ == IDLE || state_ == WAIT_TRIGGER || state_ == FINISH) {
-    fd_->trigger_ = true;
-    fd_->go_back_ = false;
-    fd_->static_state_ = true;
-    fd_->start_pos_ = fd_->odom_pos_;
-    transitState(PLAN_TRAJ, pos_call);
-  } else if (state_ == EXEC_TRAJ || state_ == PUB_TRAJ) {
-    replan_pub_.publish(std_msgs::Empty());
-    transitState(PLAN_TRAJ, pos_call);
-  }
+  publishAllocationRequest(std::string("pendingClaim:") + pos_call);
 
   return true;
 }
@@ -1525,43 +1920,19 @@ void FastExplorationFSM::optMsgCallback(const exploration_manager::PairOptConstP
     ROS_WARN("Reject frequent attempt");
     response.status = 2;
   } else {
-    // No opt attempt recently, and the grid info between drones are consistent, the pair opt
-    // request can be accepted
-    response.status = 1;
+    // Stopgap safety mode: keep the candidate for a future protocol, but do not mutate owner state.
+    response.status = 5;
 
-    const vector<int> prev_self_grid_ids = state2.grid_ids_;
-
-    // Update from the opt result
-    state1.grid_ids_.clear();
-    state2.grid_ids_.clear();
-    for (auto id : msg->ego_ids) state1.grid_ids_.push_back(id);
-    for (auto id : msg->other_ids) state2.grid_ids_.push_back(id);
-
-    state1.recent_interact_time_ = msg->stamp;
+    auto ed = expl_manager_->ed_;
+    ed->pending_pair_opt_peer_grid_ids_.assign(msg->ego_ids.begin(), msg->ego_ids.end());
+    ed->pending_pair_opt_grid_ids_.assign(msg->other_ids.begin(), msg->other_ids.end());
     state2.recent_attempt_time_ = ros::Time::now().toSec();
-    expl_manager_->ed_->reallocated_ = true;
-    expl_manager_->ed_->wait_response_ = false;
 
-    const bool self_assignment_changed = prev_self_grid_ids != state2.grid_ids_;
-    const bool need_immediate_replan =
-        needsImmediateAssignmentReplan(prev_self_grid_ids, state2.grid_ids_, expl_manager_);
-    if (self_assignment_changed) {
-      if (state_ == IDLE && !state2.grid_ids_.empty()) {
-        transitState(PLAN_TRAJ, "optMsgCallback");
-        ROS_WARN("Restart after opt!");
-      } else if (need_immediate_replan && state_ != WAIT_TRIGGER && state_ != INIT &&
-                 state_ != FINISH && state_ != PLAN_TRAJ) {
-        replan_pub_.publish(std_msgs::Empty());
-        transitState(PLAN_TRAJ, "optMsgCallback");
-        ROS_WARN("Replan after pair-opt assignment update");
-      }
-    }
-
-    // if (!check_consistency(tmp1, tmp2)) {
-    //   response.status = 2;
-    //   ROS_WARN("Inconsistent grid info, reject pair opt");
-    // } else {
-    // }
+    ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged pair-opt candidate from drone "
+                    << msg->from_drone_id << " (peer="
+                    << ed->pending_pair_opt_peer_grid_ids_.size() << ", self="
+                    << ed->pending_pair_opt_grid_ids_.size()
+                    << ") without applying ownership.");
   }
   for (int i = 0; i < fp_->repeat_send_num_; ++i) opt_res_pub_.publish(response);
 }
@@ -1588,26 +1959,13 @@ void FastExplorationFSM::optResMsgCallback(
   if (msg->status != 1) return;  // Receive 1 for valid opt
 
   auto& state2 = ed->swarm_state_[msg->from_drone_id - 1];
-  const vector<int> prev_self_grid_ids = state1.grid_ids_;
-  state1.grid_ids_ = ed->ego_ids_;
-  state2.grid_ids_ = ed->other_ids_;
+  ed->pending_commit_grid_ids_ = ed->ego_ids_;
+  ed->pending_commit_peer_grid_ids_ = ed->other_ids_;
   state2.recent_interact_time_ = ros::Time::now().toSec();
-  ed->reallocated_ = true;
-
-  const bool self_assignment_changed = prev_self_grid_ids != state1.grid_ids_;
-  const bool need_immediate_replan =
-      needsImmediateAssignmentReplan(prev_self_grid_ids, state1.grid_ids_, expl_manager_);
-  if (self_assignment_changed) {
-    if (state_ == IDLE && !state1.grid_ids_.empty()) {
-      transitState(PLAN_TRAJ, "optResMsgCallback");
-      ROS_WARN("Restart after opt!");
-    } else if (need_immediate_replan && state_ != WAIT_TRIGGER && state_ != INIT &&
-               state_ != FINISH && state_ != PLAN_TRAJ) {
-      replan_pub_.publish(std_msgs::Empty());
-      transitState(PLAN_TRAJ, "optResMsgCallback");
-      ROS_WARN("Replan after pair-opt response update");
-    }
-  }
+  ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged pair-opt commit candidate (self="
+                  << ed->pending_commit_grid_ids_.size() << ", peer="
+                  << ed->pending_commit_peer_grid_ids_.size()
+                  << ") after response without applying ownership.");
 }
 
 void FastExplorationFSM::swarmTrajCallback(const bspline::BsplineConstPtr& msg) {

@@ -38,6 +38,12 @@ add_message_files(
   PairOptResponse.msg
   HGrid.msg
   GridTour.msg
+  ComponentState.msg
+  AllocationRequest.msg
+  AssignmentPlan.msg
+  AssignmentAck.msg
+  AssignmentCommit.msg
+  ReleaseRequest.msg
 )
 
 generate_messages(
@@ -77,5 +83,13 @@ add_executable(ground_node
 )
 add_dependencies(ground_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(ground_node
+  ${catkin_LIBRARIES}
+)
+
+add_executable(component_allocation_coordinator_node
+  src/component_allocation_coordinator_node.cpp
+)
+add_dependencies(component_allocation_coordinator_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(component_allocation_coordinator_node
   ${catkin_LIBRARIES}
 )

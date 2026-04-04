@@ -4,10 +4,192 @@
 #include "ns3/flow-id-tag.h"
 #include "ns3/internet-module.h"
 #include "ns3/network-module.h"
+#include <protobuf_msgs/racer_swarm_msg.pb.h>
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("SwarmMessageApplication");
+
+namespace {
+
+bool ShouldTraceOwnershipFamily(const relay_racer_proto::RacerSwarmMsg& wrapper)
+{
+  return wrapper.family() == "allocation_request" || wrapper.family() == "release_request";
+}
+
+bool DecodeSwarmPacketPayload(Ptr<const Packet> packet,
+                              SwarmMessageHeader* header,
+                              relay_racer_proto::RacerSwarmMsg* wrapper,
+                              uint32_t* payload_bytes)
+{
+  if (!packet)
+  {
+    return false;
+  }
+
+  Ptr<Packet> copy = packet->Copy();
+  SwarmMessageHeader local_header;
+  if (copy->GetSize() < local_header.GetSerializedSize())
+  {
+    return false;
+  }
+
+  copy->RemoveHeader(local_header);
+  const uint32_t local_payload_bytes = copy->GetSize();
+  std::string payload(local_payload_bytes, '\0');
+  if (local_payload_bytes > 0)
+  {
+    copy->CopyData(reinterpret_cast<uint8_t*>(&payload[0]), local_payload_bytes);
+  }
+
+  if (header)
+  {
+    *header = local_header;
+  }
+  if (payload_bytes)
+  {
+    *payload_bytes = local_payload_bytes;
+  }
+
+  return wrapper && wrapper->ParseFromString(payload);
+}
+
+void LogOwnershipSendPayload(const relay_racer_proto::RacerSwarmMsg& wrapper,
+                             uint32_t sender_id,
+                             uint32_t flow_id,
+                             uint32_t dest_port,
+                             uint32_t seq,
+                             uint32_t packet_bytes,
+                             int send_ret)
+{
+  if (!ShouldTraceOwnershipFamily(wrapper))
+  {
+    return;
+  }
+
+  NS_LOG_UNCOND("[SWARM_APP][send_payload]"
+                << " family=" << wrapper.family()
+                << " src_id=" << wrapper.src_id()
+                << " dst_id=" << wrapper.dst_id()
+                << " network_tx_id=" << wrapper.network_tx_id()
+                << " payload_bytes=" << wrapper.ros_payload().size()
+                << " packet_bytes=" << packet_bytes
+                << " sender_id=" << sender_id
+                << " flow_id=" << flow_id
+                << " dest_port=" << dest_port
+                << " seq=" << seq
+                << " send_ret=" << send_ret);
+}
+
+void LogOwnershipRecvPacket(const relay_racer_proto::RacerSwarmMsg& wrapper,
+                            const SwarmMessageHeader& header,
+                            uint32_t local_port,
+                            uint32_t peer_id,
+                            const InetSocketAddress& remote,
+                            uint32_t payload_bytes,
+                            uint32_t packet_bytes)
+{
+  if (!ShouldTraceOwnershipFamily(wrapper))
+  {
+    return;
+  }
+
+  NS_LOG_UNCOND("[SWARM_APP][recv_packet]"
+                << " family=" << wrapper.family()
+                << " src_id=" << wrapper.src_id()
+                << " dst_id=" << wrapper.dst_id()
+                << " network_tx_id=" << wrapper.network_tx_id()
+                << " payload_bytes=" << payload_bytes
+                << " packet_bytes=" << packet_bytes
+                << " sender_id=" << header.GetSenderId()
+                << " flow_id=" << header.GetFlowId()
+                << " seq=" << header.GetSeq()
+                << " local_port=" << local_port
+                << " from=" << remote.GetIpv4()
+                << ":" << remote.GetPort()
+                << " peer_id=" << peer_id);
+}
+
+void LogOwnershipEnqueuePayload(const relay_racer_proto::RacerSwarmMsg& wrapper,
+                                uint32_t sender_id,
+                                uint32_t flow_id,
+                                uint32_t dest_port,
+                                size_t pending_before,
+                                size_t pending_after,
+                                bool running)
+{
+  if (!ShouldTraceOwnershipFamily(wrapper))
+  {
+    return;
+  }
+
+  NS_LOG_UNCOND("[SWARM_APP][enqueue_payload]"
+                << " family=" << wrapper.family()
+                << " src_id=" << wrapper.src_id()
+                << " dst_id=" << wrapper.dst_id()
+                << " network_tx_id=" << wrapper.network_tx_id()
+                << " payload_bytes=" << wrapper.ros_payload().size()
+                << " sender_id=" << sender_id
+                << " flow_id=" << flow_id
+                << " dest_port=" << dest_port
+                << " pending_before=" << pending_before
+                << " pending_after=" << pending_after
+                << " running=" << running);
+}
+
+void LogOwnershipFlushQueue(const relay_racer_proto::RacerSwarmMsg& wrapper,
+                            uint32_t sender_id,
+                            uint32_t flow_id,
+                            uint32_t dest_port,
+                            size_t pending_before,
+                            bool running,
+                            bool has_socket)
+{
+  if (!ShouldTraceOwnershipFamily(wrapper))
+  {
+    return;
+  }
+
+  NS_LOG_UNCOND("[SWARM_APP][flush_queue]"
+                << " family=" << wrapper.family()
+                << " src_id=" << wrapper.src_id()
+                << " dst_id=" << wrapper.dst_id()
+                << " network_tx_id=" << wrapper.network_tx_id()
+                << " payload_bytes=" << wrapper.ros_payload().size()
+                << " sender_id=" << sender_id
+                << " flow_id=" << flow_id
+                << " dest_port=" << dest_port
+                << " pending_before=" << pending_before
+                << " running=" << running
+                << " has_socket=" << has_socket);
+}
+
+void LogOwnershipSendPayloadBegin(const relay_racer_proto::RacerSwarmMsg& wrapper,
+                                  uint32_t sender_id,
+                                  uint32_t flow_id,
+                                  uint32_t dest_port,
+                                  uint32_t seq,
+                                  uint32_t packet_bytes)
+{
+  if (!ShouldTraceOwnershipFamily(wrapper))
+  {
+    return;
+  }
+
+  NS_LOG_UNCOND("[SWARM_APP][send_payload_begin]"
+                << " family=" << wrapper.family()
+                << " src_id=" << wrapper.src_id()
+                << " dst_id=" << wrapper.dst_id()
+                << " network_tx_id=" << wrapper.network_tx_id()
+                << " payload_bytes=" << wrapper.ros_payload().size()
+                << " packet_bytes=" << packet_bytes
+                << " sender_id=" << sender_id
+                << " flow_id=" << flow_id
+                << " dest_port=" << dest_port
+                << " seq=" << seq);
+}
+
+}  // namespace
 
 TypeId SwarmMessageBroadcaster::GetTypeId()
 {
@@ -74,7 +256,15 @@ void SwarmMessageBroadcaster::StopApplication()
 
 void SwarmMessageBroadcaster::EnqueuePayload(const std::string& payload)
 {
+  relay_racer_proto::RacerSwarmMsg wrapper;
+  const bool parsed = wrapper.ParseFromString(payload);
+  const size_t pending_before = m_pendingPayloads.size();
   m_pendingPayloads.push_back(payload);
+  if (parsed)
+  {
+    LogOwnershipEnqueuePayload(
+        wrapper, m_senderId, m_flowId, m_destPort, pending_before, m_pendingPayloads.size(), m_running);
+  }
   if (m_running)
   {
     Simulator::Cancel(m_flushEvent);
@@ -86,6 +276,12 @@ void SwarmMessageBroadcaster::FlushQueue()
 {
   while (m_running && m_socket && !m_pendingPayloads.empty())
   {
+    relay_racer_proto::RacerSwarmMsg wrapper;
+    if (wrapper.ParseFromString(m_pendingPayloads.front()))
+    {
+      LogOwnershipFlushQueue(
+          wrapper, m_senderId, m_flowId, m_destPort, m_pendingPayloads.size(), m_running, m_socket != nullptr);
+    }
     SendPayload(m_pendingPayloads.front());
     m_pendingPayloads.pop_front();
   }
@@ -93,6 +289,8 @@ void SwarmMessageBroadcaster::FlushQueue()
 
 void SwarmMessageBroadcaster::SendPayload(const std::string& payload)
 {
+  relay_racer_proto::RacerSwarmMsg wrapper;
+  const bool parsed = wrapper.ParseFromString(payload);
   Ptr<Packet> packet = payload.empty()
       ? Create<Packet>()
       : Create<Packet>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
@@ -108,7 +306,29 @@ void SwarmMessageBroadcaster::SendPayload(const std::string& payload)
   flow_id.SetFlowId(m_flowId);
   packet->AddPacketTag(flow_id);
 
-  m_socket->SendTo(packet, 0, InetSocketAddress(Ipv4Address::GetBroadcast(), m_destPort));
+  const uint32_t seq = header.GetSeq();
+  if (parsed)
+  {
+    LogOwnershipSendPayloadBegin(wrapper, m_senderId, m_flowId, m_destPort, seq, packet->GetSize());
+  }
+  const int send_ret =
+      m_socket->SendTo(packet, 0, InetSocketAddress(Ipv4Address::GetBroadcast(), m_destPort));
+  if (parsed)
+  {
+    LogOwnershipSendPayload(
+        wrapper, m_senderId, m_flowId, m_destPort, seq, packet->GetSize(), send_ret);
+  }
+  else
+  {
+    NS_LOG_UNCOND("[SWARM_APP][send_payload_unparsed]"
+                  << " payload_bytes=" << payload.size()
+                  << " packet_bytes=" << packet->GetSize()
+                  << " sender_id=" << m_senderId
+                  << " flow_id=" << m_flowId
+                  << " dest_port=" << m_destPort
+                  << " seq=" << seq
+                  << " send_ret=" << send_ret);
+  }
   m_txTrace(packet);
   ++m_sent;
 }
@@ -176,20 +396,49 @@ void SwarmMessageReceiver::Receive(Ptr<Socket> socket)
 {
   Ptr<Packet> packet;
   Address from;
+  uint32_t drained = 0;
+
+  NS_LOG_UNCOND("[SWARM_APP][recv_poll_begin]"
+                << " local_port=" << m_port
+                << " available_before=" << socket->GetRxAvailable());
 
   while ((packet = socket->RecvFrom(from)))
   {
+    ++drained;
     if (!InetSocketAddress::IsMatchingType(from))
     {
       continue;
     }
 
-    Ipv4Address peer_address = InetSocketAddress::ConvertFrom(from).GetIpv4();
+    const InetSocketAddress remote = InetSocketAddress::ConvertFrom(from);
+    Ipv4Address peer_address = remote.GetIpv4();
     uint32_t peer_id = peer_address.CombineMask("0.0.0.255").Get() - 1;
+    SwarmMessageHeader header;
+    relay_racer_proto::RacerSwarmMsg wrapper;
+    uint32_t payload_bytes = 0;
+    if (DecodeSwarmPacketPayload(packet, &header, &wrapper, &payload_bytes))
+    {
+      LogOwnershipRecvPacket(
+          wrapper, header, m_port, peer_id, remote, payload_bytes, packet->GetSize());
+    }
+    else
+    {
+      NS_LOG_UNCOND("[SWARM_APP][recv_packet_unparsed]"
+                    << " local_port=" << m_port
+                    << " packet_bytes=" << packet->GetSize()
+                    << " from=" << remote.GetIpv4()
+                    << ":" << remote.GetPort()
+                    << " peer_id=" << peer_id);
+    }
 
     m_rxTrace(packet, static_cast<int>(peer_id));
     ++m_received;
   }
+
+  NS_LOG_UNCOND("[SWARM_APP][recv_poll_end]"
+                << " local_port=" << m_port
+                << " drained=" << drained
+                << " available_after=" << socket->GetRxAvailable());
 }
 
 uint64_t SwarmMessageReceiver::GetReceived() const

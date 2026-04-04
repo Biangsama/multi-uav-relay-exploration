@@ -56,6 +56,7 @@ target_link_libraries(racer_phy_connector_node
 add_executable(racer_real_phy_bridge_node
   src/racer_real_phy_bridge_node.cpp
 )
+target_compile_features(racer_real_phy_bridge_node PRIVATE cxx_std_17)
 add_dependencies(racer_real_phy_bridge_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(racer_real_phy_bridge_node
   ${catkin_LIBRARIES}

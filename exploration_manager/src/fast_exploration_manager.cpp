@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream>
 #include <array>
+#include <unordered_set>
 #include <active_perception/graph_node.h>
 #include <active_perception/graph_search.h>
 #include <active_perception/perception_utils.h>
@@ -243,6 +244,17 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   ed_->reallocated_ = true;
   ed_->pair_opt_stamp_ = 0.0;
   ed_->wait_response_ = false;
+  ed_->pending_grid_ids_.clear();
+  ed_->pending_claim_grid_ids_.clear();
+  ed_->pending_relay_recover_grid_ids_.clear();
+  ed_->pending_pair_opt_grid_ids_.clear();
+  ed_->pending_pair_opt_peer_grid_ids_.clear();
+  ed_->pending_release_grid_ids_.clear();
+  ed_->pending_invalidated_grid_ids_.clear();
+  ed_->pending_plan_fail_release_grid_ids_.clear();
+  ed_->pending_commit_grid_ids_.clear();
+  ed_->pending_commit_peer_grid_ids_.clear();
+  ed_->pending_relay_enter_release_grid_ids_.clear();
   ed_->plan_num_ = 0;
 
   // Analysis
@@ -1063,7 +1075,19 @@ bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>&
 
   auto t1 = ros::Time::now();
 
-  auto& grid_ids = ed_->swarm_state_[ep_->drone_id_ - 1].grid_ids_;
+  vector<int> grid_ids = ed_->swarm_state_[ep_->drone_id_ - 1].grid_ids_;
+  if (!ed_->pending_release_grid_ids_.empty()) {
+    std::unordered_set<int> pending_release_ids(
+        ed_->pending_release_grid_ids_.begin(), ed_->pending_release_grid_ids_.end());
+    vector<int> filtered_grid_ids;
+    filtered_grid_ids.reserve(grid_ids.size());
+    for (const int grid_id : grid_ids) {
+      if (pending_release_ids.find(grid_id) == pending_release_ids.end()) {
+        filtered_grid_ids.push_back(grid_id);
+      }
+    }
+    grid_ids.swap(filtered_grid_ids);
+  }
 
   // hgrid_->updateBaseCoor();  // Use the latest basecoor transform of swarm
 
@@ -1206,10 +1230,10 @@ bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>&
 
   // uniform_grid_->getGridTour(indices, ed_->grid_tour_);
   grid_ids = indices;
+  ed_->pending_grid_ids_ = grid_ids;
   hgrid_->getGridTour(grid_ids, positions[0], ed_->grid_tour_, ed_->grid_tour2_);
-
-  ed_->last_grid_ids_ = grid_ids;
-  ed_->reallocated_ = false;
+  ROS_WARN_STREAM("[Manager]: Drone " << ep_->drone_id_ << " staged planner candidate with "
+                  << grid_ids.size() << " grids without applying ownership.");
 
   // hgrid_->checkFirstGrid(grid_ids.front());
 

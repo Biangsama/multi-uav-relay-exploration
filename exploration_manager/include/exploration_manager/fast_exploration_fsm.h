@@ -11,14 +11,21 @@
 #include <exploration_manager/DroneState.h>
 #include <exploration_manager/PairOpt.h>
 #include <exploration_manager/PairOptResponse.h>
+#include <exploration_manager/AssignmentPlan.h>
+#include <exploration_manager/AssignmentAck.h>
+#include <exploration_manager/AssignmentCommit.h>
+#include <exploration_manager/AllocationRequest.h>
+#include <exploration_manager/ReleaseRequest.h>
 #include <bspline/Bspline.h>
 #include <relay_racer_integration/RelayRoleCmd.h>
 #include <relay_racer_integration/RelayTaskState.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <iostream>
 #include <vector>
 #include <memory>
+#include <unordered_map>
 #include <string>
 #include <thread>
 
@@ -62,6 +69,11 @@ private:
   void requestAggressiveReassign(const string& reason);
   bool tryClaimUnallocatedGrids(const string& pos_call, bool require_empty_assignment);
   bool tryStartExploration(const string& pos_call, bool finish_if_no_frontier);
+  void getEffectiveSelfGridIds(vector<int>& grid_ids) const;
+  void stagePendingSelfRelease(const vector<int>& grid_ids);
+  void clearPendingAssignmentTxn();
+  bool publishAllocationRequest(const string& reason);
+  bool publishReleaseRequest(const vector<int>& grid_ids, const string& reason);
 
   /* ROS functions */
   void FSMCallback(const ros::TimerEvent& e);
@@ -74,6 +86,8 @@ private:
   // Swarm
   void droneStateTimerCallback(const ros::TimerEvent& e);
   void droneStateMsgCallback(const exploration_manager::DroneStateConstPtr& msg);
+  void assignmentPlanCallback(const exploration_manager::AssignmentPlanConstPtr& msg);
+  void assignmentCommitCallback(const exploration_manager::AssignmentCommitConstPtr& msg);
   void optTimerCallback(const ros::TimerEvent& e);
   void optMsgCallback(const exploration_manager::PairOptConstPtr& msg);
   void optResMsgCallback(const exploration_manager::PairOptResponseConstPtr& msg);
@@ -96,9 +110,10 @@ private:
   ros::Publisher replan_pub_, new_pub_, bspline_pub_;
 
   // Swarm state
-  ros::Publisher drone_state_pub_, relay_task_state_pub_, opt_pub_, opt_res_pub_, swarm_traj_pub_,
-      grid_tour_pub_, hgrid_pub_;
-  ros::Subscriber drone_state_sub_, opt_sub_, opt_res_sub_, swarm_traj_sub_;
+  ros::Publisher drone_state_pub_, relay_task_state_pub_, component_state_pub_, allocation_request_pub_, release_request_pub_, assignment_ack_pub_,
+      opt_pub_, opt_res_pub_, swarm_traj_pub_, grid_tour_pub_, hgrid_pub_;
+  ros::Subscriber drone_state_sub_, assignment_plan_sub_, assignment_commit_sub_, opt_sub_, opt_res_sub_,
+      swarm_traj_sub_;
   ros::Timer drone_state_timer_, opt_timer_, swarm_traj_timer_;
 
   int current_role_;
@@ -106,6 +121,21 @@ private:
   Vector3d relay_target_;
   double relay_yaw_;
   vector<int> relay_suspended_grid_ids_;
+  uint64_t component_epoch_;
+  int component_leader_id_;
+  bool component_members_initialized_;
+  vector<int> last_component_member_ids_;
+  std::unordered_map<int, int> component_owner_ids_;
+  std::unordered_map<int, uint64_t> component_owner_versions_;
+  bool pending_assignment_active_;
+  uint64_t pending_assignment_txn_id_;
+  uint64_t pending_assignment_component_epoch_;
+  int pending_assignment_leader_id_;
+  int pending_assignment_grid_id_;
+  int pending_assignment_owner_id_;
+  uint64_t pending_assignment_owner_version_;
+  uint64_t next_allocation_request_txn_id_;
+  uint64_t next_release_request_txn_id_;
 };
 
 }  // namespace fast_planner
