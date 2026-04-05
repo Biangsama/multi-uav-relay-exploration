@@ -66,6 +66,10 @@ Important utilities:
 - `racer_real_odom_bridge.py`: real-odom bridging utility
 - `planner_sensor_gate.py`: planner/sensor gating helper
 
+## Docker
+
+Docker 部署说明见 `docker/README.md`。
+
 ## Environment Requirements
 
 Recommended baseline:

@@ -1,0 +1,22 @@
+services:
+  relay-explore:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        CATKIN_JOBS: ${CATKIN_JOBS:-4}
+        NS3_JOBS: ${NS3_JOBS:-4}
+        BUILD_NS3: ${BUILD_NS3:-1}
+    image: multi-uav-relay-exploration:noetic
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    working_dir: /opt/relay_explore_ws
+    environment:
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: "1"
+      XDG_RUNTIME_DIR: /tmp/runtime-root
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: bash
