@@ -3,7 +3,11 @@
 #include <thread>
 #include <iostream>
 #include <fstream>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
+#include <sstream>
 #include <unordered_set>
 #include <active_perception/graph_node.h>
 #include <active_perception/graph_search.h>
@@ -30,6 +34,170 @@
 using namespace Eigen;
 
 namespace fast_planner {
+namespace {
+constexpr double kGlobalAllocPeerStateFreshnessSec = 0.5;
+
+struct AllocationSolverDispatch {
+  int prob_type;
+  int request_prob;
+  const char* dispatch_mode;
+  const char* type_name;
+  const char* file_stem;
+  const char* client_name;
+  const char* service_name_prefix;
+  const char* backend_name;
+  bool use_acvrp_client;
+};
+
+const char* allocationProbTypeLabel(const int prob_type) {
+  switch (prob_type) {
+    case 1:
+      return "ATSP family";
+    case 2:
+      return "ACVRP family";
+    default:
+      return "unknown";
+  }
+}
+
+const char* allocationRequestProbLabel(const int request_prob) {
+  switch (request_prob) {
+    case 1:
+      return "amtsp / ATSP";
+    case 2:
+      return "amtsp2 / ATSP";
+    case 3:
+      return "amtsp3 / ACVRP";
+    default:
+      return "unknown";
+  }
+}
+
+// Solver family selection only applies after small-grid direct-assignment shortcuts.
+// Single-drone allocation keeps the ATSP path, while multi-drone general allocation
+// uses the capacity-aware ACVRP path.
+AllocationSolverDispatch selectAllocationSolverDispatch(const int drone_num) {
+  if (drone_num > 1) {
+    return { 2, 3, "multi-drone-general", "ACVRP", "amtsp3", "acvrp_client_",
+        "/solve_acvrp_", "/usr/local/bin/LKH", true };
+  }
+  return { 1, 1, "single-drone-general", "ATSP", "amtsp", "tsp_client_",
+      "/solve_tsp_", "solveMTSPWithLKH3", false };
+}
+
+constexpr int kMinScaledDemandBudget = 256;
+constexpr int kScaledDemandUnitsPerNonEmptyGrid = 8;
+
+struct AllocationDemandModel {
+  vector<int> demands;
+  int total_unknown;
+  int positive_grid_num;
+  int zero_grid_num;
+  int target_total_demand;
+  int total_demand;
+  int max_demand;
+  int min_nonzero_demand;
+  bool scaled;
+  double scale_ratio;
+};
+
+AllocationDemandModel buildAllocationDemandModel(const vector<int>& unknown_nums) {
+  AllocationDemandModel model;
+  model.demands.assign(unknown_nums.size(), 0);
+  model.total_unknown = 0;
+  model.positive_grid_num = 0;
+  model.zero_grid_num = 0;
+  model.target_total_demand = 0;
+  model.total_demand = 0;
+  model.max_demand = 0;
+  model.min_nonzero_demand = 0;
+  model.scaled = false;
+  model.scale_ratio = 1.0;
+
+  vector<int> nonempty_indices;
+  nonempty_indices.reserve(unknown_nums.size());
+  for (int i = 0; i < static_cast<int>(unknown_nums.size()); ++i) {
+    const int unknown_num = std::max(0, unknown_nums[i]);
+    model.total_unknown += unknown_num;
+    if (unknown_num > 0) {
+      nonempty_indices.push_back(i);
+    }
+  }
+
+  model.positive_grid_num = static_cast<int>(nonempty_indices.size());
+  model.zero_grid_num = static_cast<int>(unknown_nums.size()) - model.positive_grid_num;
+  if (model.total_unknown <= 0 || nonempty_indices.empty()) {
+    return model;
+  }
+
+  const int scaling_budget = std::max(kMinScaledDemandBudget,
+      model.positive_grid_num * kScaledDemandUnitsPerNonEmptyGrid);
+  model.target_total_demand = std::min(model.total_unknown, scaling_budget);
+  model.scaled = model.target_total_demand < model.total_unknown;
+  model.scale_ratio = static_cast<double>(model.target_total_demand) /
+                      static_cast<double>(model.total_unknown);
+
+  if (!model.scaled) {
+    model.demands = unknown_nums;
+  } else {
+    for (const int idx : nonempty_indices) {
+      model.demands[idx] = 1;
+    }
+
+    const int remaining_budget = model.target_total_demand - model.positive_grid_num;
+    const int scalable_unknown = model.total_unknown - model.positive_grid_num;
+    struct RemainderEntry {
+      double fractional;
+      int idx;
+      int unknown_num;
+    };
+
+    vector<RemainderEntry> remainders;
+    remainders.reserve(nonempty_indices.size());
+    int assigned_extra = 0;
+    if (remaining_budget > 0 && scalable_unknown > 0) {
+      for (const int idx : nonempty_indices) {
+        const double exact_extra = static_cast<double>(remaining_budget) *
+            static_cast<double>(unknown_nums[idx] - 1) / static_cast<double>(scalable_unknown);
+        const int extra_floor = static_cast<int>(std::floor(exact_extra));
+        model.demands[idx] += extra_floor;
+        assigned_extra += extra_floor;
+        remainders.push_back({ exact_extra - static_cast<double>(extra_floor), idx, unknown_nums[idx] });
+      }
+
+      const int extras_left = remaining_budget - assigned_extra;
+      std::sort(remainders.begin(), remainders.end(), [](const RemainderEntry& lhs,
+                                                            const RemainderEntry& rhs) {
+        if (std::fabs(lhs.fractional - rhs.fractional) > 1e-12) {
+          return lhs.fractional > rhs.fractional;
+        }
+        if (lhs.unknown_num != rhs.unknown_num) {
+          return lhs.unknown_num > rhs.unknown_num;
+        }
+        return lhs.idx < rhs.idx;
+      });
+
+      for (int i = 0; i < extras_left && i < static_cast<int>(remainders.size()); ++i) {
+        model.demands[remainders[i].idx] += 1;
+      }
+    }
+  }
+
+  model.min_nonzero_demand = std::numeric_limits<int>::max();
+  for (const int demand : model.demands) {
+    model.total_demand += demand;
+    model.max_demand = std::max(model.max_demand, demand);
+    if (demand > 0) {
+      model.min_nonzero_demand = std::min(model.min_nonzero_demand, demand);
+    }
+  }
+  if (model.min_nonzero_demand == std::numeric_limits<int>::max()) {
+    model.min_nonzero_demand = 0;
+  }
+
+  return model;
+}
+}
 // SECTION interfaces for setup and query
 
 FastExplorationManager::FastExplorationManager() {
@@ -612,20 +780,21 @@ void FastExplorationManager::findGridAndFrontierPath(const Vector3d& cur_pos,
     vector<int>& frontier_ids) {
   auto t1 = ros::Time::now();
 
-  // Select nearby drones according to their states' stamp
-  vector<Eigen::Vector3d> positions = { cur_pos };
-  // vector<Eigen::Vector3d> velocities = { Eigen::Vector3d(0, 0, 0) };
-  vector<Eigen::Vector3d> velocities = { cur_vel };
-  vector<double> yaws = { cur_yaw[0] };
-
   // Partitioning-based tour planning
   vector<int> ego_ids;
   vector<vector<int>> other_ids;
-  if (!findGlobalTourOfGrid(positions, velocities, ego_ids, other_ids)) {
+  if (!findGlobalTourOfGridFromSwarm(cur_pos, cur_vel, ego_ids, other_ids)) {
     grid_ids = {};
     return;
   }
   grid_ids = ego_ids;
+
+  if (grid_ids.empty()) {
+    frontier_ids.clear();
+    ROS_WARN_STREAM("[GLOBAL_ALLOC]: drone " << ep_->drone_id_
+                    << " received no grids from the global allocator.");
+    return;
+  }
 
   double grid_time = (ros::Time::now() - t1).toSec();
 
@@ -654,6 +823,61 @@ void FastExplorationManager::findGridAndFrontierPath(const Vector3d& cur_pos,
   findTourOfFrontier(cur_pos, cur_vel, cur_yaw, ftr_ids, grid_pos_vec, frontier_ids);
   double ftr_time = (ros::Time::now() - t1).toSec();
   ROS_INFO("Grid tour t: %lf, frontier tour t: %lf.", grid_time, ftr_time);
+}
+
+void FastExplorationManager::buildSwarmGlobalAllocationInputs(const Vector3d& self_pos,
+    const Vector3d& self_vel, vector<int>& drone_ids, vector<Eigen::Vector3d>& positions,
+    vector<Eigen::Vector3d>& velocities) const {
+  drone_ids.clear();
+  positions.clear();
+  velocities.clear();
+
+  if (!ed_ || !ep_) {
+    return;
+  }
+
+  drone_ids.push_back(ep_->drone_id_);
+  positions.push_back(self_pos);
+  velocities.push_back(self_vel);
+
+  const int self_index = std::max(0, ep_->drone_id_ - 1);
+  const double now_sec = ros::Time::now().toSec();
+  for (int i = 0; i < static_cast<int>(ed_->swarm_state_.size()); ++i) {
+    if (i == self_index) {
+      continue;
+    }
+
+    const auto& candidate = ed_->swarm_state_[i];
+    if (!candidate.task_assignable_ || candidate.stamp_ <= 1e-4) {
+      continue;
+    }
+    if (now_sec - candidate.stamp_ > kGlobalAllocPeerStateFreshnessSec) {
+      continue;
+    }
+
+    drone_ids.push_back(i + 1);
+    positions.push_back(candidate.pos_);
+    velocities.push_back(candidate.vel_);
+  }
+}
+
+bool FastExplorationManager::findGlobalTourOfGridFromSwarm(const Vector3d& self_pos,
+    const Vector3d& self_vel, vector<int>& indices, vector<vector<int>>& others, bool init) {
+  vector<int> drone_ids;
+  vector<Eigen::Vector3d> positions, velocities;
+  buildSwarmGlobalAllocationInputs(self_pos, self_vel, drone_ids, positions, velocities);
+
+  std::ostringstream drone_stream;
+  for (int i = 0; i < static_cast<int>(drone_ids.size()); ++i) {
+    if (i != 0) {
+      drone_stream << ",";
+    }
+    drone_stream << drone_ids[i];
+  }
+  ROS_INFO_STREAM("[GLOBAL_ALLOC]: assembled swarm input drones=" << drone_ids.size()
+                  << ", ids=[" << drone_stream.str() << "]");
+
+  return findGlobalTourOfGrid(positions, velocities, drone_ids, indices, others, init);
 }
 
 void FastExplorationManager::shortenPath(vector<Vector3d>& path) {
@@ -849,101 +1073,276 @@ void FastExplorationManager::refineLocalTour(const Vector3d& cur_pos, const Vect
 }
 
 void FastExplorationManager::allocateGrids(const vector<Eigen::Vector3d>& positions,
-    const vector<Eigen::Vector3d>& velocities, const vector<vector<int>>& first_ids,
-    const vector<vector<int>>& second_ids, const vector<int>& grid_ids, vector<int>& ego_ids,
-    vector<int>& other_ids) {
-  // ROS_INFO("Allocate grid.");
+    const vector<Eigen::Vector3d>& velocities, const vector<int>& drone_ids,
+    const vector<vector<int>>& first_ids, const vector<vector<int>>& second_ids,
+    const vector<int>& grid_ids, vector<vector<int>>& assigned_grid_ids) {
+  assigned_grid_ids.clear();
+
+  auto idsToString = [](const vector<int>& ids) {
+    std::ostringstream oss;
+    oss << "[";
+    for (int i = 0; i < static_cast<int>(ids.size()); ++i) {
+      if (i != 0) oss << ",";
+      oss << ids[i];
+    }
+    oss << "]";
+    return oss.str();
+  };
+  auto assignmentsToString = [&](const vector<int>& ids,
+                                 const vector<vector<int>>& assignments) {
+    std::ostringstream oss;
+    oss << "{";
+    for (int i = 0; i < static_cast<int>(ids.size()); ++i) {
+      if (i != 0) oss << ", ";
+      oss << ids[i] << ":";
+      if (i < static_cast<int>(assignments.size())) {
+        oss << idsToString(assignments[i]);
+      } else {
+        oss << "[]";
+      }
+    }
+    oss << "}";
+    return oss.str();
+  };
+  auto demandMapToString = [](const vector<int>& grid_ids, const vector<int>& unknown_nums,
+                              const vector<int>& demands) {
+    const int count = std::min(static_cast<int>(grid_ids.size()),
+        std::min(static_cast<int>(unknown_nums.size()), static_cast<int>(demands.size())));
+    std::ostringstream oss;
+    oss << "[";
+    for (int i = 0; i < count; ++i) {
+      if (i != 0) oss << ", ";
+      oss << grid_ids[i] << ":" << unknown_nums[i] << "->" << demands[i];
+    }
+    oss << "]";
+    return oss.str();
+  };
+  auto demandHistogramToString = [](const vector<int>& demands) {
+    vector<int> nonzero_demands;
+    nonzero_demands.reserve(demands.size());
+    for (const int demand : demands) {
+      if (demand > 0) nonzero_demands.push_back(demand);
+    }
+    if (nonzero_demands.empty()) {
+      return std::string("[]");
+    }
+
+    std::sort(nonzero_demands.begin(), nonzero_demands.end());
+    std::ostringstream oss;
+    oss << "[";
+    int current = nonzero_demands.front();
+    int count = 0;
+    for (const int demand : nonzero_demands) {
+      if (demand == current) {
+        ++count;
+        continue;
+      }
+      oss << current << "x" << count << ", ";
+      current = demand;
+      count = 1;
+    }
+    oss << current << "x" << count << "]";
+    return oss.str();
+  };
+
+  if (positions.empty() || velocities.size() != positions.size() ||
+      drone_ids.size() != positions.size()) {
+    ROS_WARN_STREAM("[ALLOC]: invalid inputs positions=" << positions.size()
+                    << ", velocities=" << velocities.size() << ", drone_ids="
+                    << drone_ids.size() << ", active_grids=" << idsToString(grid_ids));
+    return;
+  }
+
+  const int drone_num = positions.size();
+  assigned_grid_ids.resize(drone_num);
+
+  vector<vector<int>> normalized_first_ids(drone_num), normalized_second_ids(drone_num);
+  for (int i = 0; i < drone_num; ++i) {
+    if (i < static_cast<int>(first_ids.size())) normalized_first_ids[i] = first_ids[i];
+    if (i < static_cast<int>(second_ids.size())) normalized_second_ids[i] = second_ids[i];
+  }
+  if (first_ids.size() != positions.size() || second_ids.size() != positions.size()) {
+    ROS_WARN_STREAM("[ALLOC]: padded frontier hints first_ids=" << first_ids.size()
+                    << ", second_ids=" << second_ids.size() << ", drones=" << drone_num);
+  }
+
+  ROS_INFO_STREAM("[ALLOC]: input drones=" << idsToString(drone_ids)
+                  << ", active_grids=" << idsToString(grid_ids));
+
+  if (grid_ids.empty()) {
+    ROS_WARN_STREAM("[ALLOC]: skip allocation because active_grids is empty for drones="
+                    << idsToString(drone_ids));
+    return;
+  }
+
+  auto logAssignments = [&](const std::string& tag, const double matrix_sec,
+                            const double solve_sec) {
+    ROS_INFO_STREAM("[ALLOC]: " << tag << " result "
+                    << assignmentsToString(drone_ids, assigned_grid_ids));
+    for (int i = 0; i < drone_num; ++i) {
+      ROS_INFO_STREAM("[ALLOC]: drone " << drone_ids[i] << " <- "
+                      << idsToString(assigned_grid_ids[i]));
+    }
+    if (matrix_sec >= 0.0 || solve_sec >= 0.0) {
+      ROS_INFO_STREAM("[ALLOC]: " << tag << " matrix_sec=" << matrix_sec
+                      << ", solve_sec=" << solve_sec);
+    }
+  };
+
+  auto assignGridByBestCost = [&](const int grid_id, const std::string& tag) {
+    int best_drone_idx = -1;
+    double best_cost = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < drone_num; ++i) {
+      const double cost = hgrid_->getCostDroneToGrid(
+          positions[i], velocities[i], grid_id, normalized_first_ids[i]);
+      if (cost + 1e-6 < best_cost ||
+          (std::fabs(cost - best_cost) <= 1e-6 &&
+              (best_drone_idx < 0 || drone_ids[i] < drone_ids[best_drone_idx]))) {
+        best_cost = cost;
+        best_drone_idx = i;
+      }
+    }
+    if (best_drone_idx >= 0) {
+      assigned_grid_ids[best_drone_idx].push_back(grid_id);
+      ROS_INFO_STREAM("[ALLOC]: " << tag << " grid=" << grid_id << " -> drone "
+                      << drone_ids[best_drone_idx] << " (slot=" << best_drone_idx
+                      << ", cost=" << best_cost << ")");
+    }
+  };
 
   auto t1 = ros::Time::now();
-  auto t2 = t1;
 
-  if (grid_ids.size() == 1) {  // Only one grid, no need to run ACVRP
-    auto pt = hgrid_->getCenter(grid_ids.front());
-    // double d1 = (positions[0] - pt).norm();
-    // double d2 = (positions[1] - pt).norm();
-    vector<Eigen::Vector3d> path;
-    double d1 = ViewNode::computeCost(positions[0], pt, 0, 0, Eigen::Vector3d(0, 0, 0), 0, path);
-    double d2 = ViewNode::computeCost(positions[1], pt, 0, 0, Eigen::Vector3d(0, 0, 0), 0, path);
-    if (d1 < d2) {
-      ego_ids = grid_ids;
-      other_ids = {};
-    } else {
-      ego_ids = {};
-      other_ids = grid_ids;
+  if (grid_ids.size() == 1) {
+    ROS_INFO_STREAM("[ALLOC]: dispatch shortcut=single-grid-best-cost, drone_num=" << drone_num
+                    << ", grid_num=" << grid_ids.size() << ", prob_type=n/a, TYPE=n/a"
+                    << ", request_prob=n/a, client=direct-best-cost, service=n/a"
+                    << ", backend=no-solver, par_file=n/a, active_grids="
+                    << idsToString(grid_ids));
+    assignGridByBestCost(grid_ids.front(), "single-grid shortcut");
+    logAssignments("single-grid shortcut", 0.0, 0.0);
+    return;
+  }
+
+  if (drone_num > 1 && grid_ids.size() < 3) {
+    ROS_INFO_STREAM("[ALLOC]: dispatch shortcut=small-grid-best-cost, drone_num=" << drone_num
+                    << ", grid_num=" << grid_ids.size() << ", prob_type=n/a, TYPE=n/a"
+                    << ", request_prob=n/a, client=direct-best-cost, service=n/a"
+                    << ", backend=no-solver, par_file=n/a, active_grids="
+                    << idsToString(grid_ids));
+    for (const int grid_id : grid_ids) {
+      assignGridByBestCost(grid_id, "small-grid shortcut");
     }
+    logAssignments("small-grid shortcut", 0.0, 0.0);
     return;
   }
 
   Eigen::MatrixXd mat;
-  // uniform_grid_->getCostMatrix(positions, velocities, prev_first_ids, grid_ids, mat);
-  hgrid_->getCostMatrix(positions, velocities, first_ids, second_ids, grid_ids, mat);
+  hgrid_->getCostMatrix(
+      positions, velocities, normalized_first_ids, normalized_second_ids, grid_ids, mat);
+  const double mat_time = (ros::Time::now() - t1).toSec();
 
-  // int unknown = hgrid_->getTotalUnknwon();
-  int unknown;
-
-  double mat_time = (ros::Time::now() - t1).toSec();
-
-  // Find optimal path through AmTSP
   t1 = ros::Time::now();
   const int dimension = mat.rows();
-  const int drone_num = positions.size();
 
   vector<int> unknown_nums;
-  int capacity = 0;
-  for (int i = 0; i < grid_ids.size(); ++i) {
-    int unum = hgrid_->getUnknownCellsNum(grid_ids[i]);
+  unknown_nums.reserve(grid_ids.size());
+  int max_unknown = 0;
+  for (int i = 0; i < static_cast<int>(grid_ids.size()); ++i) {
+    const int unum = std::max(0, hgrid_->getUnknownCellsNum(grid_ids[i]));
     unknown_nums.push_back(unum);
-    capacity += unum;
-    // std::cout << "Grid " << i << ": " << unum << std::endl;
+    max_unknown = std::max(max_unknown, unum);
   }
-  // std::cout << "Total: " << capacity << std::endl;
-  capacity = capacity * 0.75 * 0.1;
+  const AllocationDemandModel demand_model = buildAllocationDemandModel(unknown_nums);
+  const int total_unknown = demand_model.total_unknown;
+  const vector<int>& demands = demand_model.demands;
+  const int total_demand = demand_model.total_demand;
+  const int max_demand = demand_model.max_demand;
+  const int capacity_from_average = static_cast<int>(std::ceil(static_cast<double>(total_demand) /
+                                 static_cast<double>(std::max(1, drone_num))));
+  const int capacity = std::max(1, std::max(max_demand, capacity_from_average));
+  const int total_capacity = capacity * drone_num;
+  const AllocationSolverDispatch dispatch = selectAllocationSolverDispatch(drone_num);
+  const string solver_file_prefix =
+      ep_->mtsp_dir_ + "/" + string(dispatch.file_stem) + "_" + to_string(ep_->drone_id_);
+  const string solver_problem_file = solver_file_prefix + ".atsp";
+  const string solver_par_file = solver_file_prefix + ".par";
+  const string solver_tour_file = solver_file_prefix + ".tour";
+  const string solver_service_name =
+      string(dispatch.service_name_prefix) + to_string(ep_->drone_id_);
 
-  // int prob_type;
-  // if (grid_ids.size() >= 3)
-  //   prob_type = 2;  // Use ACVRP
-  // else
-  //   prob_type = 1;  // Use AmTSP
+  ROS_INFO_STREAM("[ALLOC]: dispatch mode=" << dispatch.dispatch_mode << ", drone_num="
+                  << drone_num << ", grid_num=" << grid_ids.size() << ", prob_type="
+                  << dispatch.prob_type << " (" << allocationProbTypeLabel(dispatch.prob_type)
+                  << "), TYPE=" << dispatch.type_name << ", active_grids="
+                  << idsToString(grid_ids) << ", request_prob=" << dispatch.request_prob << " ("
+                  << allocationRequestProbLabel(dispatch.request_prob) << "), client="
+                  << dispatch.client_name << ", service=" << solver_service_name
+                  << ", backend=" << dispatch.backend_name << ", problem_file="
+                  << solver_problem_file << ", par_file=" << solver_par_file
+                  << ", tour_file=" << solver_tour_file << ", total_unknown="
+                  << total_unknown << ", max_unknown=" << max_unknown
+                  << ", target_total_demand=" << demand_model.target_total_demand
+                  << ", total_demand=" << total_demand << ", capacity=" << capacity
+                  << ", total_capacity=" << total_capacity
+                  << ", demand_scaled=" << (demand_model.scaled ? "true" : "false"));
 
-  const int prob_type = 2;
+  if (dispatch.prob_type == 2) {
+    const double avg_unknown_per_nonempty = demand_model.positive_grid_num > 0
+        ? static_cast<double>(total_unknown) / static_cast<double>(demand_model.positive_grid_num)
+        : 0.0;
+    const double avg_demand_per_nonempty = demand_model.positive_grid_num > 0
+        ? static_cast<double>(total_demand) / static_cast<double>(demand_model.positive_grid_num)
+        : 0.0;
+    const double demand_load_factor = total_capacity > 0
+        ? static_cast<double>(total_demand) / static_cast<double>(total_capacity)
+        : 0.0;
+    ROS_INFO_STREAM("[ALLOC]: ACVRP demand stats total_unknown=" << total_unknown
+                    << ", target_total_demand=" << demand_model.target_total_demand
+                    << ", total_demand=" << total_demand
+                    << ", capacity_per_vehicle=" << capacity
+                    << ", total_capacity=" << total_capacity
+                    << ", nonempty_grids=" << demand_model.positive_grid_num
+                    << ", zero_grids=" << demand_model.zero_grid_num
+                    << ", min_nonzero_demand=" << demand_model.min_nonzero_demand
+                    << ", max_demand=" << max_demand
+                    << ", avg_unknown_per_nonempty=" << avg_unknown_per_nonempty
+                    << ", avg_demand_per_nonempty=" << avg_demand_per_nonempty
+                    << ", scale_ratio=" << demand_model.scale_ratio
+                    << ", load_factor=" << demand_load_factor
+                    << ", demand_histogram=" << demandHistogramToString(demands));
+    ROS_INFO_STREAM("[ALLOC]: ACVRP demand mapping "
+                    << demandMapToString(grid_ids, unknown_nums, demands));
+  }
 
-  // Create problem file--------------------------
-  ofstream file(ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".atsp");
+  ofstream file(solver_problem_file);
   file << "NAME : pairopt\n";
-
-  if (prob_type == 1)
-    file << "TYPE : ATSP\n";
-  else if (prob_type == 2)
-    file << "TYPE : ACVRP\n";
-
+  file << "TYPE : " << dispatch.type_name << "\n";
   file << "DIMENSION : " + to_string(dimension) + "\n";
   file << "EDGE_WEIGHT_TYPE : EXPLICIT\n";
   file << "EDGE_WEIGHT_FORMAT : FULL_MATRIX\n";
 
-  if (prob_type == 2) {
-    file << "CAPACITY : " + to_string(capacity) + "\n";   // ACVRP
-    file << "VEHICLES : " + to_string(drone_num) + "\n";  // ACVRP
+  if (dispatch.prob_type == 2) {
+    file << "CAPACITY : " + to_string(capacity) + "\n";
+    file << "VEHICLES : " + to_string(drone_num) + "\n";
   }
 
-  // Cost matrix
   file << "EDGE_WEIGHT_SECTION\n";
   for (int i = 0; i < dimension; ++i) {
     for (int j = 0; j < dimension; ++j) {
-      int int_cost = 100 * mat(i, j);
+      const int int_cost = static_cast<int>(std::lround(100.0 * mat(i, j)));
       file << int_cost << " ";
     }
     file << "\n";
   }
 
-  if (prob_type == 2) {  // Demand section, ACVRP only
+  if (dispatch.prob_type == 2) {
     file << "DEMAND_SECTION\n";
     file << "1 0\n";
     for (int i = 0; i < drone_num; ++i) {
       file << to_string(i + 2) + " 0\n";
     }
-    for (int i = 0; i < grid_ids.size(); ++i) {
-      int grid_unknown = unknown_nums[i] * 0.1;
-      file << to_string(i + 2 + drone_num) + " " + to_string(grid_unknown) + "\n";
+    for (int i = 0; i < static_cast<int>(grid_ids.size()); ++i) {
+      file << to_string(i + 2 + drone_num) + " " + to_string(demands[i]) + "\n";
     }
     file << "DEPOT_SECTION\n";
     file << "1\n";
@@ -952,48 +1351,54 @@ void FastExplorationManager::allocateGrids(const vector<Eigen::Vector3d>& positi
 
   file.close();
 
-  // Create par file------------------------------------------
-  int min_size = int(grid_ids.size()) / 2;
-  int max_size = ceil(int(grid_ids.size()) / 2.0);
-  file.open(ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".par");
+  file.open(solver_par_file);
   file << "SPECIAL\n";
-  file << "PROBLEM_FILE = " + ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".atsp\n";
-  if (prob_type == 1) {
+  file << "PROBLEM_FILE = " << solver_problem_file << "\n";
+  if (dispatch.prob_type == 1) {
     file << "SALESMEN = " << to_string(drone_num) << "\n";
     file << "MTSP_OBJECTIVE = MINSUM\n";
-    // file << "MTSP_OBJECTIVE = MINMAX\n";
-    file << "MTSP_MIN_SIZE = " << to_string(min_size) << "\n";
-    file << "MTSP_MAX_SIZE = " << to_string(max_size) << "\n";
     file << "TRACE_LEVEL = 0\n";
-  } else if (prob_type == 2) {
-    file << "TRACE_LEVEL = 1\n";  // ACVRP
-    file << "SEED = 0\n";         // ACVRP
+  } else if (dispatch.prob_type == 2) {
+    file << "TRACE_LEVEL = 1\n";
+    file << "SEED = 0\n";
   }
   file << "RUNS = 1\n";
-  file << "TOUR_FILE = " + ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".tour\n";
+  file << "TOUR_FILE = " << solver_tour_file << "\n";
 
   file.close();
 
-  auto par_dir = ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".atsp";
   t1 = ros::Time::now();
 
   lkh_mtsp_solver::SolveMTSP srv;
-  srv.request.prob = 3;
-  // if (!tsp_client_.call(srv)) {
-  if (!acvrp_client_.call(srv)) {
-    ROS_ERROR("Fail to solve ACVRP.");
+  srv.request.prob = dispatch.request_prob;
+  const bool solver_ok =
+      dispatch.use_acvrp_client ? acvrp_client_.call(srv) : tsp_client_.call(srv);
+  if (!solver_ok) {
+    ROS_ERROR_STREAM("[ALLOC]: solver dispatch failed mode=" << dispatch.dispatch_mode
+                     << ", drone_num=" << drone_num << ", grid_num=" << grid_ids.size()
+                     << ", prob_type=" << dispatch.prob_type << " ("
+                     << allocationProbTypeLabel(dispatch.prob_type) << "), TYPE="
+                     << dispatch.type_name << ", request_prob=" << dispatch.request_prob << " ("
+                     << allocationRequestProbLabel(dispatch.request_prob) << "), client="
+                     << dispatch.client_name << ", service=" << solver_service_name
+                     << ", backend=" << dispatch.backend_name << ", par_file="
+                     << solver_par_file);
     return;
   }
-  // system("/home/boboyu/software/LKH-3.0.6/LKH
-  // /home/boboyu/workspaces/hkust_swarm_ws/src/swarm_exploration/utils/lkh_mtsp_solver/resource/amtsp3_1.par");
 
-  double mtsp_time = (ros::Time::now() - t1).toSec();
+  const double mtsp_time = (ros::Time::now() - t1).toSec();
+  ROS_INFO_STREAM("[ALLOC]: solver call completed mode=" << dispatch.dispatch_mode
+                  << ", drone_num=" << drone_num << ", grid_num=" << grid_ids.size()
+                  << ", prob_type=" << dispatch.prob_type << " ("
+                  << allocationProbTypeLabel(dispatch.prob_type) << "), TYPE="
+                  << dispatch.type_name << ", request_prob=" << dispatch.request_prob << " ("
+                  << allocationRequestProbLabel(dispatch.request_prob) << "), client="
+                  << dispatch.client_name << ", service=" << solver_service_name
+                  << ", backend=" << dispatch.backend_name << ", par_file="
+                  << solver_par_file << ", solve_sec=" << mtsp_time);
   std::cout << "Allocation time: " << mtsp_time << std::endl;
 
-  // Read results
-  t1 = ros::Time::now();
-
-  ifstream fin(ep_->mtsp_dir_ + "/amtsp3_" + to_string(ep_->drone_id_) + ".tour");
+  ifstream fin(solver_tour_file);
   string res;
   vector<int> ids;
   while (getline(fin, res)) {
@@ -1006,61 +1411,63 @@ void FastExplorationManager::allocateGrids(const vector<Eigen::Vector3d>& positi
   }
   fin.close();
 
-  // Parse the m-tour of grid
   vector<vector<int>> tours;
   vector<int> tour;
-  for (auto id : ids) {
+  for (const int id : ids) {
     if (id > 0 && id <= drone_num) {
+      if (!tour.empty()) {
+        tours.push_back(tour);
+      }
       tour.clear();
       tour.push_back(id);
     } else if (id >= dimension || id <= 0) {
-      tours.push_back(tour);
-    } else {
+      if (!tour.empty()) {
+        tours.push_back(tour);
+        tour.clear();
+      }
+    } else if (!tour.empty()) {
       tour.push_back(id);
     }
   }
-  // // Print tour ids
-  // for (auto tr : tours) {
-  //   std::cout << "tour: ";
-  //   for (auto id : tr) std::cout << id << ", ";
-  //   std::cout << "" << std::endl;
-  // }
+  if (!tour.empty()) {
+    tours.push_back(tour);
+  }
 
-  for (int i = 1; i < tours.size(); ++i) {
-    if (tours[i][0] == 1) {
-      ego_ids.insert(ego_ids.end(), tours[i].begin() + 1, tours[i].end());
-    } else {
-      other_ids.insert(other_ids.end(), tours[i].begin() + 1, tours[i].end());
+  int assigned_count = 0;
+  for (const auto& parsed_tour : tours) {
+    if (parsed_tour.empty()) continue;
+    const int drone_slot = parsed_tour.front() - 1;
+    if (drone_slot < 0 || drone_slot >= drone_num) continue;
+    for (int i = 1; i < static_cast<int>(parsed_tour.size()); ++i) {
+      const int grid_slot = parsed_tour[i] - 1 - drone_num;
+      if (grid_slot < 0 || grid_slot >= static_cast<int>(grid_ids.size())) {
+        ROS_WARN_STREAM("[ALLOC]: skip invalid grid slot " << grid_slot
+                        << " while parsing tour for drone " << drone_ids[drone_slot]);
+        continue;
+      }
+      assigned_grid_ids[drone_slot].push_back(grid_ids[grid_slot]);
+      ++assigned_count;
     }
   }
-  for (auto& id : ego_ids) {
-    id = grid_ids[id - 1 - drone_num];
-  }
-  for (auto& id : other_ids) {
-    id = grid_ids[id - 1 - drone_num];
-  }
-  // // Remove repeated grid
-  // unordered_map<int, int> ego_map, other_map;
-  // for (auto id : ego_ids) ego_map[id] = 1;
-  // for (auto id : other_ids) other_map[id] = 1;
 
-  // ego_ids.clear();
-  // other_ids.clear();
-  // for (auto p : ego_map) ego_ids.push_back(p.first);
-  // for (auto p : other_map) other_ids.push_back(p.first);
+  if (assigned_count != static_cast<int>(grid_ids.size())) {
+    ROS_WARN_STREAM("[ALLOC]: parsed " << assigned_count << " assigned grids from "
+                    << grid_ids.size() << " active grids. Result="
+                    << assignmentsToString(drone_ids, assigned_grid_ids));
+  }
 
-  // sort(ego_ids.begin(), ego_ids.end());
-  // sort(other_ids.begin(), other_ids.end());
+  logAssignments("solver", mat_time, mtsp_time);
 }
 
 double FastExplorationManager::computeGridPathCost(const Eigen::Vector3d& pos,
-    const vector<int>& grid_ids, const vector<int>& first, const vector<vector<int>>& firsts,
+    const Eigen::Vector3d& vel, const vector<int>& grid_ids, const vector<int>& first,
+    const vector<vector<int>>& firsts,
     const vector<vector<int>>& seconds, const double& w_f) {
   if (grid_ids.empty()) return 0.0;
 
   double cost = 0.0;
   vector<Eigen::Vector3d> path;
-  cost += hgrid_->getCostDroneToGrid(pos, grid_ids[0], first);
+  cost += hgrid_->getCostDroneToGrid(pos, vel, grid_ids[0], first);
   for (int i = 0; i < grid_ids.size() - 1; ++i) {
     cost += hgrid_->getCostGridToGrid(grid_ids[i], grid_ids[i + 1], firsts, seconds, firsts.size());
   }
@@ -1068,25 +1475,35 @@ double FastExplorationManager::computeGridPathCost(const Eigen::Vector3d& pos,
 }
 
 bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>& positions,
-    const vector<Eigen::Vector3d>& velocities, vector<int>& indices, vector<vector<int>>& others,
-    bool init) {
+    const vector<Eigen::Vector3d>& velocities, const vector<int>& drone_ids, vector<int>& indices,
+    vector<vector<int>>& others, bool init) {
 
   ROS_INFO("Find grid tour---------------");
 
   auto t1 = ros::Time::now();
 
-  vector<int> grid_ids = ed_->swarm_state_[ep_->drone_id_ - 1].grid_ids_;
+  indices.clear();
+  others.clear();
+  if (positions.empty() || velocities.size() != positions.size() ||
+      drone_ids.size() != positions.size()) {
+    ROS_WARN_STREAM("[GLOBAL_ALLOC]: invalid swarm inputs positions=" << positions.size()
+                    << ", velocities=" << velocities.size() << ", drone_ids="
+                    << drone_ids.size());
+    return false;
+  }
+
+  vector<int> self_grid_ids = ed_->swarm_state_[ep_->drone_id_ - 1].grid_ids_;
   if (!ed_->pending_release_grid_ids_.empty()) {
     std::unordered_set<int> pending_release_ids(
         ed_->pending_release_grid_ids_.begin(), ed_->pending_release_grid_ids_.end());
     vector<int> filtered_grid_ids;
-    filtered_grid_ids.reserve(grid_ids.size());
-    for (const int grid_id : grid_ids) {
+    filtered_grid_ids.reserve(self_grid_ids.size());
+    for (const int grid_id : self_grid_ids) {
       if (pending_release_ids.find(grid_id) == pending_release_ids.end()) {
         filtered_grid_ids.push_back(grid_id);
       }
     }
-    grid_ids.swap(filtered_grid_ids);
+    self_grid_ids.swap(filtered_grid_ids);
   }
 
   // hgrid_->updateBaseCoor();  // Use the latest basecoor transform of swarm
@@ -1099,33 +1516,81 @@ bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>&
   }
   hgrid_->inputFrontiers(ed_->averages_, frontier_cell_nums);
 
-  hgrid_->updateGridData(
-      ep_->drone_id_, grid_ids, ed_->reallocated_, ed_->last_grid_ids_, first_ids, second_ids);
+  hgrid_->updateGridData(ep_->drone_id_, self_grid_ids, ed_->reallocated_, ed_->last_grid_ids_,
+      first_ids, second_ids);
   publishTaskMetrics();
 
-  if (grid_ids.empty()) {
-    ROS_WARN("Empty dominance.");
+  vector<int> active_grid_ids;
+  hgrid_->getActiveGrids(active_grid_ids);
+  if (!ed_->pending_release_grid_ids_.empty()) {
+    std::unordered_set<int> pending_release_ids(
+        ed_->pending_release_grid_ids_.begin(), ed_->pending_release_grid_ids_.end());
+    vector<int> filtered_active_grid_ids;
+    filtered_active_grid_ids.reserve(active_grid_ids.size());
+    for (const int grid_id : active_grid_ids) {
+      if (pending_release_ids.find(grid_id) == pending_release_ids.end()) {
+        filtered_active_grid_ids.push_back(grid_id);
+      }
+    }
+    active_grid_ids.swap(filtered_active_grid_ids);
+  }
+
+  if (active_grid_ids.empty()) {
+    ROS_WARN("[GLOBAL_ALLOC]: no active grids available for global allocation.");
     ed_->grid_tour_.clear();
+    ed_->grid_tour2_.clear();
     return false;
   }
 
-  std::cout << "Allocated grid: ";
-  for (auto id : grid_ids) std::cout << id << ", ";
-  std::cout << "" << std::endl;
+  vector<vector<int>> all_first_ids, all_second_ids;
+  all_first_ids.reserve(drone_ids.size());
+  all_second_ids.reserve(drone_ids.size());
+  if (!init) {
+    all_first_ids.push_back(first_ids);
+    all_second_ids.push_back(second_ids);
+    for (int i = 1; i < static_cast<int>(drone_ids.size()); ++i) {
+      const int drone_index = drone_ids[i] - 1;
+      vector<int> peer_grid_ids;
+      if (drone_index >= 0 && drone_index < static_cast<int>(ed_->observed_peer_grid_ids_.size()) &&
+          !ed_->observed_peer_grid_ids_[drone_index].empty()) {
+        peer_grid_ids = ed_->observed_peer_grid_ids_[drone_index];
+      } else if (drone_index >= 0 && drone_index < static_cast<int>(ed_->swarm_state_.size())) {
+        peer_grid_ids = ed_->swarm_state_[drone_index].grid_ids_;
+      }
+
+      vector<int> peer_first_ids, peer_second_ids;
+      if (!peer_grid_ids.empty()) {
+        hgrid_->getConsistentGrid(
+            peer_grid_ids, active_grid_ids, peer_first_ids, peer_second_ids);
+      }
+      all_first_ids.push_back(peer_first_ids);
+      all_second_ids.push_back(peer_second_ids);
+    }
+  } else {
+    all_first_ids.assign(drone_ids.size(), vector<int>());
+    all_second_ids.assign(drone_ids.size(), vector<int>());
+  }
+
+  std::ostringstream drone_stream;
+  for (int i = 0; i < static_cast<int>(drone_ids.size()); ++i) {
+    if (i != 0) {
+      drone_stream << ",";
+    }
+    drone_stream << drone_ids[i];
+  }
+  ROS_INFO_STREAM("[GLOBAL_ALLOC]: solving with drones=" << drone_ids.size() << " ids=["
+                  << drone_stream.str() << "], active_grids=" << active_grid_ids.size()
+                  << ", self_prev_grids=" << self_grid_ids.size() << ", init=" << init);
 
   Eigen::MatrixXd mat;
-  // uniform_grid_->getCostMatrix(positions, velocities, first_ids, grid_ids, mat);
-  if (!init)
-    hgrid_->getCostMatrix(positions, velocities, { first_ids }, { second_ids }, grid_ids, mat);
-  else
-    hgrid_->getCostMatrix(positions, velocities, { {} }, { {} }, grid_ids, mat);
+  hgrid_->getCostMatrix(positions, velocities, all_first_ids, all_second_ids, active_grid_ids, mat);
 
   double mat_time = (ros::Time::now() - t1).toSec();
 
   // Find optimal path through ATSP
   t1 = ros::Time::now();
   const int dimension = mat.rows();
-  const int drone_num = 1;
+  const int drone_num = positions.size();
 
   // Create problem file
   ofstream file(ep_->mtsp_dir_ + "/amtsp2_" + to_string(ep_->drone_id_) + ".atsp");
@@ -1169,7 +1634,6 @@ bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>&
   }
 
   double mtsp_time = (ros::Time::now() - t1).toSec();
-  // std::cout << "AmTSP time: " << mtsp_time << std::endl;
 
   // Read results
   t1 = ros::Time::now();
@@ -1201,41 +1665,65 @@ bool FastExplorationManager::findGlobalTourOfGrid(const vector<Eigen::Vector3d>&
     }
   }
 
-  // for (auto tr : tours) {
-  //   std::cout << "tour: ";
-  //   for (auto id : tr) std::cout << id << ", ";
-  //   std::cout << "" << std::endl;
-  // }
-  others.resize(drone_num - 1);
-  for (int i = 1; i < tours.size(); ++i) {
+  others.resize(std::max(0, drone_num - 1));
+  for (int i = 1; i < static_cast<int>(tours.size()); ++i) {
+    if (tours[i].empty()) {
+      continue;
+    }
     if (tours[i][0] == 1) {
       indices.insert(indices.end(), tours[i].begin() + 1, tours[i].end());
-    } else {
+    } else if (tours[i][0] > 1 && tours[i][0] <= drone_num) {
       others[tours[i][0] - 2].insert(
-          others[tours[i][0] - 2].end(), tours[i].begin(), tours[i].end());
+          others[tours[i][0] - 2].end(), tours[i].begin() + 1, tours[i].end());
     }
   }
   for (auto& id : indices) {
     id -= 1 + drone_num;
   }
   for (auto& other : others) {
-    for (auto& id : other) id -= 1 + drone_num;
+    for (auto& id : other) {
+      id -= 1 + drone_num;
+    }
   }
+
+  std::ostringstream self_stream;
   std::cout << "Grid tour: ";
-  for (auto& id : indices) {
-    id = grid_ids[id];
-    std::cout << id << ", ";
+  for (int i = 0; i < static_cast<int>(indices.size()); ++i) {
+    indices[i] = active_grid_ids[indices[i]];
+    if (i != 0) {
+      self_stream << ",";
+    }
+    self_stream << indices[i];
+    std::cout << indices[i] << ", ";
   }
   std::cout << "" << std::endl;
+  ROS_INFO_STREAM("[GLOBAL_ALLOC]: result drone " << ep_->drone_id_ << " <- ["
+                  << self_stream.str() << "]");
 
-  // uniform_grid_->getGridTour(indices, ed_->grid_tour_);
-  grid_ids = indices;
-  ed_->pending_grid_ids_ = grid_ids;
-  hgrid_->getGridTour(grid_ids, positions[0], ed_->grid_tour_, ed_->grid_tour2_);
-  ROS_WARN_STREAM("[Manager]: Drone " << ep_->drone_id_ << " staged planner candidate with "
-                  << grid_ids.size() << " grids without applying ownership.");
+  for (int i = 0; i < static_cast<int>(others.size()); ++i) {
+    std::ostringstream peer_stream;
+    for (int j = 0; j < static_cast<int>(others[i].size()); ++j) {
+      others[i][j] = active_grid_ids[others[i][j]];
+      if (j != 0) {
+        peer_stream << ",";
+      }
+      peer_stream << others[i][j];
+    }
+    ROS_INFO_STREAM("[GLOBAL_ALLOC]: result drone " << drone_ids[i + 1] << " <- ["
+                    << peer_stream.str() << "]");
+  }
 
-  // hgrid_->checkFirstGrid(grid_ids.front());
+  ed_->pending_grid_ids_ = indices;
+  if (!indices.empty()) {
+    hgrid_->getGridTour(indices, positions[0], ed_->grid_tour_, ed_->grid_tour2_);
+  } else {
+    ed_->grid_tour_.clear();
+    ed_->grid_tour2_.clear();
+  }
+  ROS_WARN_STREAM("[GLOBAL_ALLOC]: drone " << ep_->drone_id_ << " staged planner candidate with "
+                  << indices.size() << " self grids from " << active_grid_ids.size()
+                  << " active grids across " << drone_num << " drones.");
+  ROS_INFO_STREAM("[GLOBAL_ALLOC]: matrix_sec=" << mat_time << ", solve_sec=" << mtsp_time);
 
   return true;
 }

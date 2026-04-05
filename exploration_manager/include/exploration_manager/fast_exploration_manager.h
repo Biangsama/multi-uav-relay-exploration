@@ -41,20 +41,23 @@ public:
   int updateFrontierStruct(const Eigen::Vector3d& pos);
 
   void allocateGrids(const vector<Eigen::Vector3d>& positions,
-      const vector<Eigen::Vector3d>& velocities, const vector<vector<int>>& first_ids,
-      const vector<vector<int>>& second_ids, const vector<int>& grid_ids, vector<int>& ego_ids,
-      vector<int>& other_ids);
+      const vector<Eigen::Vector3d>& velocities, const vector<int>& drone_ids,
+      const vector<vector<int>>& first_ids, const vector<vector<int>>& second_ids,
+      const vector<int>& grid_ids, vector<vector<int>>& assigned_grid_ids);
+
+  bool findGlobalTourOfGridFromSwarm(const Vector3d& self_pos, const Vector3d& self_vel,
+      vector<int>& ids, vector<vector<int>>& others, bool init = false);
 
   // Find optimal tour visiting unknown grid
   bool findGlobalTourOfGrid(const vector<Eigen::Vector3d>& positions,
-      const vector<Eigen::Vector3d>& velocities, vector<int>& ids, vector<vector<int>>& others,
-      bool init = false);
+      const vector<Eigen::Vector3d>& velocities, const vector<int>& drone_ids, vector<int>& ids,
+      vector<vector<int>>& others, bool init = false);
 
   void calcMutualCosts(const Eigen::Vector3d& pos, const double& yaw, const Eigen::Vector3d& vel,
       const vector<pair<Eigen::Vector3d, double>>& views, vector<float>& costs);
 
-  double computeGridPathCost(const Eigen::Vector3d& pos, const vector<int>& grid_ids,
-      const vector<int>& first, const vector<vector<int>>& firsts,
+  double computeGridPathCost(const Eigen::Vector3d& pos, const Eigen::Vector3d& vel,
+      const vector<int>& grid_ids, const vector<int>& first, const vector<vector<int>>& firsts,
       const vector<vector<int>>& seconds, const double& w_f);
 
   shared_ptr<ExplorationData> ed_;
@@ -92,6 +95,10 @@ private:
 
   void findTourOfFrontier(const Vector3d& cur_pos, const Vector3d& cur_vel, const Vector3d& cur_yaw,
       const vector<int>& ftr_ids, const vector<Eigen::Vector3d>& grid_pos, vector<int>& ids);
+
+  void buildSwarmGlobalAllocationInputs(const Vector3d& self_pos, const Vector3d& self_vel,
+      vector<int>& drone_ids, vector<Eigen::Vector3d>& positions,
+      vector<Eigen::Vector3d>& velocities) const;
 
 public:
   typedef shared_ptr<FastExplorationManager> Ptr;

@@ -381,11 +381,41 @@ private:
     bool found_free_grid = false;
     int selected_grid_id = 0;
     OwnershipRecord selected_record{ 0, 0 };
-    for (const auto& free_grid_entry : free_grid_pool_) {
-      if (!found_free_grid || free_grid_entry.first < selected_grid_id) {
+    if (!msg->grid_ids.empty()) {
+      for (const int requested_id : msg->grid_ids) {
+        const auto free_grid_it = free_grid_pool_.find(requested_id);
+        if (free_grid_it == free_grid_pool_.end()) {
+          continue;
+        }
         found_free_grid = true;
-        selected_grid_id = free_grid_entry.first;
-        selected_record = OwnershipRecord{ 0, free_grid_entry.second };
+        selected_grid_id = requested_id;
+        selected_record = OwnershipRecord{ 0, free_grid_it->second };
+        break;
+      }
+      if (!found_free_grid) {
+        ROS_WARN_STREAM("[ALLOC_COORD][drop_request:requested_grids_unavailable]"
+                        << " drone_id_=" << drone_id_
+                        << " local_leader_id_=" << leader_id_
+                        << " request_leader_id=" << msg->leader_id
+                        << " local_component_epoch_=" << component_epoch_
+                        << " request_component_epoch=" << msg->component_epoch
+                        << " pending_plan_active_=" << pending_plan_active_
+                        << " pending_plan_txn_id_=" << pending_plan_txn_id_
+                        << " pending_plan_grid_id_=" << pending_plan_grid_id_
+                        << " pending_plan_owner_id_=" << pending_plan_owner_id_
+                        << " free_grid_pool_size=" << free_grid_pool_.size()
+                        << " requested_grid_id=" << requested_grid_id
+                        << " requested_grid_in_free_pool=" << requested_grid_in_free_pool
+                        << " requested_grid_count=" << msg->grid_ids.size());
+        return;
+      }
+    } else {
+      for (const auto& free_grid_entry : free_grid_pool_) {
+        if (!found_free_grid || free_grid_entry.first < selected_grid_id) {
+          found_free_grid = true;
+          selected_grid_id = free_grid_entry.first;
+          selected_record = OwnershipRecord{ 0, free_grid_entry.second };
+        }
       }
     }
     if (!found_free_grid) {

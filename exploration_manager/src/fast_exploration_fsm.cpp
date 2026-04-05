@@ -27,6 +27,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <unordered_set>
 
 using Eigen::Vector4d;
@@ -35,7 +36,39 @@ namespace fast_planner {
 namespace {
 constexpr int kFrontierVisClearCount = 256;
 constexpr double kPeerStateFreshnessSec = 0.5;
-constexpr int kPlanFailureReleaseThreshold = 8;
+constexpr int kPlanFailureSoftRetryThreshold = 4;
+constexpr int kPlanFailurePartialReleaseThreshold = 8;
+constexpr int kPlanFailureAggressiveThreshold = 12;
+constexpr int kPlanFailureMaxPartialReliefRounds = 2;
+constexpr double kAssignmentReliefCooldownSec = 2.0;
+constexpr int kPairOptTransactionalRepairOnlyStatus = 5;
+constexpr bool kPairOptTransactionalRepairOnly = true;
+
+std::string idsToString(const vector<int>& ids) {
+  std::ostringstream oss;
+  oss << "[";
+  for (int i = 0; i < static_cast<int>(ids.size()); ++i) {
+    if (i != 0) {
+      oss << ",";
+    }
+    oss << ids[i];
+  }
+  oss << "]";
+  return oss.str();
+}
+
+std::string versionIdsToString(const vector<uint64_t>& ids) {
+  std::ostringstream oss;
+  oss << "[";
+  for (int i = 0; i < static_cast<int>(ids.size()); ++i) {
+    if (i != 0) {
+      oss << ",";
+    }
+    oss << ids[i];
+  }
+  oss << "]";
+  return oss.str();
+}
 
 bool needsImmediateAssignmentReplan(
     const vector<int>& prev_ids, const vector<int>& new_ids,
@@ -85,9 +118,11 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
   fd_->go_back_ = false;
   fd_->aggressive_reassign_requested_ = false;
   fd_->consecutive_plan_failures_ = 0;
+  fd_->plan_failure_relief_rounds_ = 0;
   fd_->last_safety_replan_time_ = ros::Time(0);
   fd_->last_plan_fail_time_ = ros::Time(0);
   fd_->last_plan_success_time_ = ros::Time(0);
+  fd_->last_assignment_relief_time_ = ros::Time(0);
   current_role_ = relay_racer_integration::RelayRoleCmd::ROLE_EXPLORER;
   have_relay_target_ = false;
   relay_target_.setZero();
@@ -210,6 +245,52 @@ void FastExplorationFSM::stagePendingSelfRelease(const vector<int>& grid_ids) {
   }
 }
 
+bool FastExplorationFSM::getPendingAllocationCandidates(vector<int>& grid_ids) const {
+  grid_ids.clear();
+  if (!expl_manager_ || !expl_manager_->ed_) {
+    return false;
+  }
+
+  std::unordered_set<int> seen;
+  auto append_unique = [&](const vector<int>& src) {
+    for (const int grid_id : src) {
+      if (seen.insert(grid_id).second) {
+        grid_ids.push_back(grid_id);
+      }
+    }
+  };
+
+  append_unique(expl_manager_->ed_->pending_relay_recover_grid_ids_);
+  append_unique(expl_manager_->ed_->pending_claim_grid_ids_);
+  return !grid_ids.empty();
+}
+
+void FastExplorationFSM::selectPlanFailureReleaseGrids(
+    const vector<int>& effective_self_grid_ids, bool aggressive, vector<int>& release_grid_ids) {
+  release_grid_ids.clear();
+  if (effective_self_grid_ids.empty()) {
+    return;
+  }
+  if (aggressive || effective_self_grid_ids.size() <= 1 || !expl_manager_ || !expl_manager_->hgrid_) {
+    release_grid_ids = effective_self_grid_ids;
+    return;
+  }
+
+  int best_index = std::min<int>(1, effective_self_grid_ids.size() - 1);
+  double best_cost = -1.0;
+  for (int i = best_index; i < static_cast<int>(effective_self_grid_ids.size()); ++i) {
+    const double grid_cost = expl_manager_->hgrid_->getCostDroneToGrid(
+        fd_->odom_pos_, fd_->odom_vel_, effective_self_grid_ids[i], {});
+    if (grid_cost > best_cost + 1e-6 ||
+        (std::fabs(grid_cost - best_cost) <= 1e-6 &&
+            effective_self_grid_ids[i] > effective_self_grid_ids[best_index])) {
+      best_cost = grid_cost;
+      best_index = i;
+    }
+  }
+  release_grid_ids.push_back(effective_self_grid_ids[best_index]);
+}
+
 void FastExplorationFSM::clearPendingAssignmentTxn() {
   pending_assignment_active_ = false;
   pending_assignment_txn_id_ = 0;
@@ -220,10 +301,109 @@ void FastExplorationFSM::clearPendingAssignmentTxn() {
   pending_assignment_owner_version_ = 0;
 }
 
+void FastExplorationFSM::clearLegacyPairOptState(const string& reason) {
+  if (!expl_manager_ || !expl_manager_->ed_) {
+    return;
+  }
+
+  auto ed = expl_manager_->ed_;
+  const bool had_state = !ed->ego_ids_.empty() || !ed->other_ids_.empty() ||
+                         !ed->pending_pair_opt_grid_ids_.empty() ||
+                         !ed->pending_pair_opt_peer_grid_ids_.empty() ||
+                         !ed->pending_commit_grid_ids_.empty() ||
+                         !ed->pending_commit_peer_grid_ids_.empty() ||
+                         ed->wait_response_ || std::fabs(ed->pair_opt_stamp_) > 1e-6;
+  if (had_state) {
+    ROS_INFO_STREAM("[FSM]: Drone " << getId() << " cleared legacy pair-opt state reason="
+                    << reason << ", ego=" << idsToString(ed->ego_ids_)
+                    << ", other=" << idsToString(ed->other_ids_)
+                    << ", pending_pair_opt_self=" << idsToString(ed->pending_pair_opt_grid_ids_)
+                    << ", pending_pair_opt_peer="
+                    << idsToString(ed->pending_pair_opt_peer_grid_ids_)
+                    << ", pending_commit_self=" << idsToString(ed->pending_commit_grid_ids_)
+                    << ", pending_commit_peer="
+                    << idsToString(ed->pending_commit_peer_grid_ids_)
+                    << ", wait_response=" << (ed->wait_response_ ? "true" : "false")
+                    << ", pair_opt_stamp=" << ed->pair_opt_stamp_);
+  }
+
+  ed->ego_ids_.clear();
+  ed->other_ids_.clear();
+  ed->pending_pair_opt_grid_ids_.clear();
+  ed->pending_pair_opt_peer_grid_ids_.clear();
+  ed->pending_commit_grid_ids_.clear();
+  ed->pending_commit_peer_grid_ids_.clear();
+  ed->wait_response_ = false;
+  ed->pair_opt_stamp_ = 0.0;
+}
+
+void FastExplorationFSM::logOwnershipEvent(const string& chain, const string& event,
+    uint64_t txn_id, uint64_t component_epoch, int leader_id, int requester_id,
+    const vector<int>& grid_ids, const string& detail) const {
+  const int drone_id =
+      expl_manager_ && expl_manager_->ep_ ? expl_manager_->ep_->drone_id_ : -1;
+  std::ostringstream oss;
+  oss << "[OWNERSHIP][" << chain << "][" << event << "] drone_id=" << drone_id
+      << ", txn_id=" << txn_id << ", component_epoch=" << component_epoch
+      << ", leader_id=" << leader_id << ", requester_id=" << requester_id
+      << ", pending_active=" << (pending_assignment_active_ ? "true" : "false")
+      << ", pending_txn_id=" << pending_assignment_txn_id_
+      << ", pending_component_epoch=" << pending_assignment_component_epoch_
+      << ", pending_leader_id=" << pending_assignment_leader_id_
+      << ", staged_grid_id=" << pending_assignment_grid_id_
+      << ", staged_owner_id=" << pending_assignment_owner_id_
+      << ", staged_owner_version=" << pending_assignment_owner_version_
+      << ", grids=" << idsToString(grid_ids);
+  if (!detail.empty()) {
+    oss << ", " << detail;
+  }
+  ROS_INFO_STREAM(oss.str());
+}
+
+void FastExplorationFSM::logPlanFailureRecovery(const string& stage, int failure_count,
+    const vector<int>& effective_self_grid_ids, const vector<int>& release_grid_ids,
+    bool trigger_aggressive_reassign, const string& reason) const {
+  const int drone_id =
+      expl_manager_ && expl_manager_->ep_ ? expl_manager_->ep_->drone_id_ : -1;
+  const int remaining_after_release = std::max(
+      0, static_cast<int>(effective_self_grid_ids.size()) - static_cast<int>(release_grid_ids.size()));
+  std::ostringstream oss;
+  oss << "[PLAN_FAILURE][" << stage << "] drone_id=" << drone_id
+      << ", consecutive_failures=" << failure_count
+      << ", relief_rounds=" << (fd_ ? fd_->plan_failure_relief_rounds_ : -1)
+      << ", component_epoch=" << component_epoch_
+      << ", leader_id=" << component_leader_id_
+      << ", pending_assignment_active=" << (pending_assignment_active_ ? "true" : "false")
+      << ", current_grids=" << idsToString(effective_self_grid_ids)
+      << ", released_grids=" << idsToString(release_grid_ids)
+      << ", remaining_after_release=" << remaining_after_release
+      << ", aggressive_reassign=" << (trigger_aggressive_reassign ? "true" : "false")
+      << ", reason=" << reason;
+  ROS_WARN_STREAM(oss.str());
+}
+
 bool FastExplorationFSM::publishAllocationRequest(const string& reason) {
   if (!component_members_initialized_ || component_leader_id_ <= 0) {
     return false;
   }
+
+  vector<int> request_grid_ids;
+  if (!getPendingAllocationCandidates(request_grid_ids)) {
+    return false;
+  }
+
+  if (pending_assignment_active_) {
+    logOwnershipEvent("assignment_request", "deferred_pending_txn",
+        pending_assignment_txn_id_, pending_assignment_component_epoch_,
+        pending_assignment_leader_id_, getId(), request_grid_ids,
+        "reason=" + reason + ", staged_claim=" +
+            idsToString(expl_manager_->ed_->pending_claim_grid_ids_) +
+            ", staged_relay_recover=" +
+            idsToString(expl_manager_->ed_->pending_relay_recover_grid_ids_));
+    return false;
+  }
+
+  clearLegacyPairOptState(std::string("publishAllocationRequest:") + reason);
 
   exploration_manager::AllocationRequest request_msg;
   request_msg.component_epoch = component_epoch_;
@@ -232,10 +412,15 @@ bool FastExplorationFSM::publishAllocationRequest(const string& reason) {
   request_msg.txn_id = next_allocation_request_txn_id_++;
   request_msg.reason = reason;
   request_msg.stamp = ros::Time::now().toSec();
-  if (expl_manager_ && expl_manager_->ed_) {
-    request_msg.grid_ids = expl_manager_->ed_->pending_claim_grid_ids_;
-  }
+  request_msg.grid_ids = request_grid_ids;
   allocation_request_pub_.publish(request_msg);
+  logOwnershipEvent("assignment_request", "published", request_msg.txn_id,
+      request_msg.component_epoch, request_msg.leader_id, request_msg.requester_id,
+      request_grid_ids,
+      "reason=" + reason + ", staged_claim=" +
+          idsToString(expl_manager_->ed_->pending_claim_grid_ids_) +
+          ", staged_relay_recover=" +
+          idsToString(expl_manager_->ed_->pending_relay_recover_grid_ids_));
   return true;
 }
 
@@ -243,6 +428,8 @@ bool FastExplorationFSM::publishReleaseRequest(const vector<int>& grid_ids, cons
   if (!component_members_initialized_ || component_leader_id_ <= 0 || grid_ids.empty()) {
     return false;
   }
+
+  clearLegacyPairOptState(std::string("publishReleaseRequest:") + reason);
 
   exploration_manager::ReleaseRequest request_msg;
   request_msg.component_epoch = component_epoch_;
@@ -259,6 +446,11 @@ bool FastExplorationFSM::publishReleaseRequest(const vector<int>& grid_ids, cons
         version_it == component_owner_versions_.end() ? 1 : version_it->second);
   }
   release_request_pub_.publish(request_msg);
+  logOwnershipEvent("release_request", "published", request_msg.txn_id,
+      request_msg.component_epoch, request_msg.leader_id, getId(), grid_ids,
+      "reason=" + reason + ", owner_versions=" +
+          versionIdsToString(request_msg.owner_versions) +
+          ", staged_release=" + idsToString(expl_manager_->ed_->pending_release_grid_ids_));
   return true;
 }
 
@@ -471,6 +663,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       int res = callExplorationPlanner();
       if (res == SUCCEED) {
         fd_->consecutive_plan_failures_ = 0;
+        fd_->plan_failure_relief_rounds_ = 0;
+        fd_->last_assignment_relief_time_ = ros::Time(0);
         fd_->last_plan_success_time_ = ros::Time::now();
         transitState(PUB_TRAJ, "FSM");
       } else if (res == FAIL) {  // Keep trying to replan
@@ -479,27 +673,102 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         ++fd_->consecutive_plan_failures_;
         ROS_WARN_STREAM("Plan fail, consecutive_failures=" << fd_->consecutive_plan_failures_);
 
-        if (current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY &&
-            fd_->consecutive_plan_failures_ >= kPlanFailureReleaseThreshold) {
-          auto ed = expl_manager_->ed_;
+        if (current_role_ != relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
           vector<int> effective_self_grid_ids;
           getEffectiveSelfGridIds(effective_self_grid_ids);
-          const size_t released_grid_count = effective_self_grid_ids.size();
-          ed->pending_plan_fail_release_grid_ids_ = effective_self_grid_ids;
-          stagePendingSelfRelease(effective_self_grid_ids);
-          publishReleaseRequest(ed->pending_plan_fail_release_grid_ids_, "repeatedPlanFailure");
-          fd_->last_check_frontier_time_ = ros::Time::now();
-          fd_->consecutive_plan_failures_ = 0;
+          const int failure_count = fd_->consecutive_plan_failures_;
 
-          ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged release of "
-                          << released_grid_count
-                          << " grids after repeated plan failures and will request reassignment.");
-          transitState(IDLE, "repeatedPlanFail");
-          requestAggressiveReassign("repeated plan failures");
-          visualize(1);
+          if (!effective_self_grid_ids.empty() &&
+              failure_count == kPlanFailureSoftRetryThreshold) {
+            logPlanFailureRecovery("level1_local_retry", failure_count, effective_self_grid_ids, {},
+                false, "holding ownership and retrying local recovery first");
+          }
+
+          if (!effective_self_grid_ids.empty() &&
+              failure_count >= kPlanFailurePartialReleaseThreshold) {
+            if (pending_assignment_active_) {
+              logPlanFailureRecovery("deferred_pending_assignment_txn", failure_count,
+                  effective_self_grid_ids, {}, false,
+                  "staged assignment txn is still active; deferring failure relief");
+            } else {
+              const ros::Time now = ros::Time::now();
+              const bool relief_cooldown_active =
+                  !fd_->last_assignment_relief_time_.isZero() &&
+                  (now - fd_->last_assignment_relief_time_).toSec() < kAssignmentReliefCooldownSec;
+              const bool single_grid_assignment = effective_self_grid_ids.size() <= 1;
+              const bool aggressive_reassign_stage =
+                  failure_count >= kPlanFailureAggressiveThreshold &&
+                  (fd_->plan_failure_relief_rounds_ >= kPlanFailureMaxPartialReliefRounds ||
+                      single_grid_assignment);
+              if (relief_cooldown_active) {
+                logPlanFailureRecovery("cooldown_hold", failure_count, effective_self_grid_ids, {},
+                    false, "within assignment-relief cooldown");
+              } else if (aggressive_reassign_stage) {
+                vector<int> release_grid_ids;
+                selectPlanFailureReleaseGrids(effective_self_grid_ids, true, release_grid_ids);
+                if (!release_grid_ids.empty()) {
+                  auto ed = expl_manager_->ed_;
+                  ed->pending_plan_fail_release_grid_ids_ = release_grid_ids;
+                  const bool published = publishReleaseRequest(
+                      ed->pending_plan_fail_release_grid_ids_, "repeatedPlanFailureAggressive");
+                  if (!published) {
+                    ed->pending_plan_fail_release_grid_ids_.clear();
+                    logPlanFailureRecovery("level3_full_release_deferred", failure_count,
+                        effective_self_grid_ids, release_grid_ids, false,
+                        "publishReleaseRequest failed for aggressive stage");
+                  } else {
+                    stagePendingSelfRelease(release_grid_ids);
+                    fd_->last_assignment_relief_time_ = now;
+                    fd_->last_check_frontier_time_ = now;
+                    fd_->consecutive_plan_failures_ = 0;
+                    fd_->plan_failure_relief_rounds_ = 0;
+                    logPlanFailureRecovery("level3_full_release_aggressive", failure_count,
+                        effective_self_grid_ids, release_grid_ids, true,
+                        single_grid_assignment
+                            ? "single remaining grid kept failing; escalated to full release"
+                            : "partial relief exhausted; escalated to full release");
+                    transitState(IDLE, "repeatedPlanFailAggressive");
+                    requestAggressiveReassign(
+                        "repeatedPlanFailureAggressive", false /* immediate_claim */);
+                    visualize(1);
+                  }
+                }
+              } else if (single_grid_assignment) {
+                logPlanFailureRecovery("level2_hold_single_grid", failure_count,
+                    effective_self_grid_ids, {}, false,
+                    "single remaining grid kept local until aggressive threshold is reached");
+              } else {
+                vector<int> release_grid_ids;
+                selectPlanFailureReleaseGrids(effective_self_grid_ids, false, release_grid_ids);
+                if (!release_grid_ids.empty()) {
+                  auto ed = expl_manager_->ed_;
+                  ed->pending_plan_fail_release_grid_ids_ = release_grid_ids;
+                  const bool published = publishReleaseRequest(
+                      ed->pending_plan_fail_release_grid_ids_, "repeatedPlanFailurePartial");
+                  if (!published) {
+                    ed->pending_plan_fail_release_grid_ids_.clear();
+                    logPlanFailureRecovery("level2_partial_release_deferred", failure_count,
+                        effective_self_grid_ids, release_grid_ids, false,
+                        "publishReleaseRequest failed for partial release");
+                  } else {
+                    stagePendingSelfRelease(release_grid_ids);
+                    fd_->last_assignment_relief_time_ = now;
+                    fd_->last_check_frontier_time_ = now;
+                    ++fd_->plan_failure_relief_rounds_;
+                    fd_->consecutive_plan_failures_ = kPlanFailureSoftRetryThreshold;
+                    logPlanFailureRecovery("level2_partial_release", failure_count,
+                        effective_self_grid_ids, release_grid_ids, false,
+                        "released the most expensive local subset and kept local replanning");
+                  }
+                }
+              }
+            }
+          }
         }
       } else if (res == NO_GRID) {
         fd_->consecutive_plan_failures_ = 0;
+        fd_->plan_failure_relief_rounds_ = 0;
+        fd_->last_assignment_relief_time_ = ros::Time(0);
         fd_->static_state_ = true;
         fd_->last_check_frontier_time_ = ros::Time::now();
         ROS_WARN_STREAM("No grid, enter IDLE and retry after " << fp_->idle_retry_interval_ << " s");
@@ -908,8 +1177,8 @@ void FastExplorationFSM::frontierCallback(const ros::TimerEvent& e) {
     cout << "odom: " << fd_->odom_pos_.transpose() << endl;
     vector<int> tmp_id1;
     vector<vector<int>> tmp_id2;
-    bool status = expl_manager_->findGlobalTourOfGrid(
-        { fd_->odom_pos_ }, { fd_->odom_vel_ }, tmp_id1, tmp_id2, true);
+    bool status = expl_manager_->findGlobalTourOfGridFromSwarm(
+        fd_->odom_pos_, fd_->odom_vel_, tmp_id1, tmp_id2, true);
 
     // Draw frontier and bounding box
     for (int i = 0; i < ed->frontiers_.size(); ++i) {
@@ -1040,6 +1309,8 @@ void FastExplorationFSM::relayRoleCmdCallback(
   relay_target_(2) = msg->relay_target.z;
   relay_yaw_ = msg->relay_yaw;
   fd_->consecutive_plan_failures_ = 0;
+  fd_->plan_failure_relief_rounds_ = 0;
+  fd_->last_assignment_relief_time_ = ros::Time(0);
 
   auto& self_state = expl_manager_->ed_->swarm_state_[getId() - 1];
   self_state.relay_role_ = current_role_;
@@ -1062,11 +1333,14 @@ void FastExplorationFSM::relayRoleCmdCallback(
     publishReleaseRequest(ed->pending_relay_enter_release_grid_ids_, "relayEnter");
     ed->pending_claim_grid_ids_.clear();
     ed->pending_relay_recover_grid_ids_.clear();
-    ed->pending_pair_opt_grid_ids_.clear();
-    ed->pending_pair_opt_peer_grid_ids_.clear();
-    ed->pending_commit_grid_ids_.clear();
-    ed->pending_commit_peer_grid_ids_.clear();
     ed->pending_grid_ids_.clear();
+    if (pending_assignment_active_) {
+      logOwnershipEvent("assignment_txn", "cleared_enter_relay", pending_assignment_txn_id_,
+          pending_assignment_component_epoch_, pending_assignment_leader_id_, getId(),
+          vector<int>{ pending_assignment_grid_id_ }, "role_transition=enter_relay");
+      clearPendingAssignmentTxn();
+    }
+    clearLegacyPairOptState("relayRoleCmdCallback:enterRelay");
     self_state.grid_ids_.clear();
     ROS_WARN_STREAM("[Relay]: Drone " << getId() << " entering relay mode, releasing "
                                       << released_grid_count
@@ -1201,6 +1475,11 @@ void FastExplorationFSM::droneStateTimerCallback(const ros::TimerEvent& e) {
   if (pending_assignment_active_ &&
       (pending_assignment_component_epoch_ != component_msg.component_epoch ||
        pending_assignment_leader_id_ != component_leader_id_)) {
+    logOwnershipEvent("assignment_txn", "cleared_component_view_change",
+        pending_assignment_txn_id_, pending_assignment_component_epoch_,
+        pending_assignment_leader_id_, getId(), vector<int>{ pending_assignment_grid_id_ },
+        "published_component_epoch=" + std::to_string(component_msg.component_epoch) +
+            ", published_leader_id=" + std::to_string(component_leader_id_));
     clearPendingAssignmentTxn();
   }
 
@@ -1263,8 +1542,44 @@ void FastExplorationFSM::assignmentPlanCallback(
     return;
   }
 
+  auto ed = expl_manager_->ed_;
   const int grid_id = msg->grid_ids[match_index];
   const uint64_t owner_version = msg->owner_versions[match_index];
+  const vector<int> staged_grid_ids = { grid_id };
+  auto has_grid = [&](const vector<int>& ids) {
+    return std::find(ids.begin(), ids.end(), grid_id) != ids.end();
+  };
+  std::string staged_source = "external_plan";
+  if (has_grid(ed->pending_claim_grid_ids_)) {
+    staged_source = "pending_claim";
+  } else if (has_grid(ed->pending_relay_recover_grid_ids_)) {
+    staged_source = "pending_relay_recover";
+  } else if (has_grid(ed->pending_grid_ids_)) {
+    staged_source = "pending_global_alloc";
+  }
+
+  const auto& self_state = ed->swarm_state_[getId() - 1];
+  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY ||
+      !self_state.task_assignable_) {
+    exploration_manager::AssignmentAck reject_msg;
+    reject_msg.component_epoch = msg->component_epoch;
+    reject_msg.leader_id = msg->leader_id;
+    reject_msg.grid_id = grid_id;
+    reject_msg.owner_id = getId();
+    reject_msg.owner_version = owner_version;
+    reject_msg.txn_id = msg->txn_id;
+    reject_msg.accept = false;
+    reject_msg.reason = std::string("notAssignable:") + msg->reason;
+    reject_msg.stamp = ros::Time::now().toSec();
+    assignment_ack_pub_.publish(reject_msg);
+    logOwnershipEvent("assignment_ack", "published_reject_not_assignable",
+        reject_msg.txn_id, reject_msg.component_epoch, reject_msg.leader_id, getId(),
+        staged_grid_ids,
+        "reason=" + reject_msg.reason + ", staged_source=" + staged_source +
+            ", owner_version=" + std::to_string(owner_version));
+    return;
+  }
+
   if (pending_assignment_active_) {
     if (pending_assignment_txn_id_ != msg->txn_id ||
         pending_assignment_component_epoch_ != msg->component_epoch ||
@@ -1272,9 +1587,20 @@ void FastExplorationFSM::assignmentPlanCallback(
         pending_assignment_grid_id_ != grid_id ||
         pending_assignment_owner_id_ != getId() ||
         pending_assignment_owner_version_ != owner_version) {
+      logOwnershipEvent("assignment_plan", "ignored_conflicting_pending_txn", msg->txn_id,
+          msg->component_epoch, msg->leader_id, getId(), staged_grid_ids,
+          "reason=" + msg->reason + ", staged_source=" + staged_source +
+              ", existing_txn_id=" + std::to_string(pending_assignment_txn_id_));
       return;
     }
+
+    logOwnershipEvent("assignment_plan", "duplicate_staged", msg->txn_id,
+        msg->component_epoch, msg->leader_id, getId(), staged_grid_ids,
+        "reason=" + msg->reason + ", staged_source=" + staged_source +
+            ", owner_version=" + std::to_string(owner_version));
   } else {
+    clearLegacyPairOptState(
+        std::string("assignmentPlanCallback:txn=") + std::to_string(msg->txn_id));
     pending_assignment_active_ = true;
     pending_assignment_txn_id_ = msg->txn_id;
     pending_assignment_component_epoch_ = msg->component_epoch;
@@ -1282,6 +1608,10 @@ void FastExplorationFSM::assignmentPlanCallback(
     pending_assignment_grid_id_ = grid_id;
     pending_assignment_owner_id_ = getId();
     pending_assignment_owner_version_ = owner_version;
+    logOwnershipEvent("assignment_plan", "staged", msg->txn_id, msg->component_epoch,
+        msg->leader_id, getId(), staged_grid_ids,
+        "reason=" + msg->reason + ", staged_source=" + staged_source +
+            ", owner_version=" + std::to_string(owner_version));
   }
 
   exploration_manager::AssignmentAck ack_msg;
@@ -1295,20 +1625,40 @@ void FastExplorationFSM::assignmentPlanCallback(
   ack_msg.reason = msg->reason;
   ack_msg.stamp = ros::Time::now().toSec();
   assignment_ack_pub_.publish(ack_msg);
+  logOwnershipEvent("assignment_ack", "published_accept", ack_msg.txn_id,
+      ack_msg.component_epoch, ack_msg.leader_id, getId(), staged_grid_ids,
+      "reason=" + ack_msg.reason + ", staged_source=" + staged_source +
+          ", owner_version=" + std::to_string(owner_version));
 }
 
 void FastExplorationFSM::assignmentCommitCallback(
     const exploration_manager::AssignmentCommitConstPtr& msg) {
+  const size_t entry_count = std::min(
+      msg->grid_ids.size(), std::min(msg->owner_ids.size(), msg->owner_versions.size()));
+  vector<int> committed_to_self_grid_ids;
+  for (size_t i = 0; i < entry_count; ++i) {
+    if (msg->owner_ids[i] == getId()) {
+      committed_to_self_grid_ids.push_back(msg->grid_ids[i]);
+    }
+  }
+
   if (!pending_assignment_active_ || msg->txn_id == 0 ||
       msg->component_epoch != component_epoch_ || msg->leader_id != component_leader_id_ ||
       msg->txn_id != pending_assignment_txn_id_ ||
       msg->component_epoch != pending_assignment_component_epoch_ ||
       msg->leader_id != pending_assignment_leader_id_) {
+    if (!committed_to_self_grid_ids.empty() && msg->txn_id != 0 &&
+        msg->component_epoch == component_epoch_ && msg->leader_id == component_leader_id_) {
+      logOwnershipEvent("assignment_commit", "ignored_without_matching_staged_txn",
+          msg->txn_id, msg->component_epoch, msg->leader_id, getId(),
+          committed_to_self_grid_ids,
+          "reason=" + msg->reason + ", pending_active=" +
+              std::string(pending_assignment_active_ ? "true" : "false"));
+    }
     return;
   }
 
-  const size_t entry_count = std::min(
-      msg->grid_ids.size(), std::min(msg->owner_ids.size(), msg->owner_versions.size()));
+  const vector<int> staged_grid_ids = { pending_assignment_grid_id_ };
   bool matched_commit = false;
   for (size_t i = 0; i < entry_count; ++i) {
     if (msg->grid_ids[i] == pending_assignment_grid_id_ &&
@@ -1319,8 +1669,15 @@ void FastExplorationFSM::assignmentCommitCallback(
     }
   }
   if (!matched_commit) {
+    logOwnershipEvent("assignment_commit", "ignored_missing_staged_entry", msg->txn_id,
+        msg->component_epoch, msg->leader_id, getId(), staged_grid_ids,
+        "reason=" + msg->reason + ", committed_to_self=" +
+            idsToString(committed_to_self_grid_ids));
     return;
   }
+
+  clearLegacyPairOptState(
+      std::string("assignmentCommitCallback:txn=") + std::to_string(msg->txn_id));
 
   auto ed = expl_manager_->ed_;
   auto& self_state = ed->swarm_state_[getId() - 1];
@@ -1347,12 +1704,26 @@ void FastExplorationFSM::assignmentCommitCallback(
   ed->last_grid_ids_.clear();
   ed->reallocated_ = true;
   ed->wait_response_ = false;
+  fd_->plan_failure_relief_rounds_ = 0;
+  fd_->last_assignment_relief_time_ = ros::Time(0);
 
   const bool self_assignment_changed = prev_self_grid_ids != self_state.grid_ids_;
   const bool need_immediate_replan =
       needsImmediateAssignmentReplan(prev_self_grid_ids, self_state.grid_ids_, expl_manager_);
 
+  logOwnershipEvent("assignment_commit", "applied", msg->txn_id, msg->component_epoch,
+      msg->leader_id, getId(), staged_grid_ids,
+      "reason=" + msg->reason + ", prev_self=" + idsToString(prev_self_grid_ids) +
+          ", new_self=" + idsToString(self_state.grid_ids_) +
+          ", self_assignment_changed=" +
+          std::string(self_assignment_changed ? "true" : "false"));
+
   clearPendingAssignmentTxn();
+
+  vector<int> remaining_candidates;
+  if (getPendingAllocationCandidates(remaining_candidates)) {
+    publishAllocationRequest(std::string("continueStagedClaim:") + msg->reason);
+  }
 
   if (!self_assignment_changed || self_state.grid_ids_.empty()) {
     return;
@@ -1422,17 +1793,46 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
   vector<int> effective_self_grid_ids;
   getEffectiveSelfGridIds(effective_self_grid_ids);
   const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
+  if (pending_assignment_active_) {
+    clearLegacyPairOptState("optTimerCallback:pending_assignment_txn");
+    ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: Drone " << getId()
+                                    << " skips pair-opt/local-repair because assignment txn "
+                                    << pending_assignment_txn_id_ << " is still staged.");
+    return;
+  }
   if (effective_self_grid_ids.empty() && tryClaimUnallocatedGrids("optTimerCallback", true)) {
     return;
   }
   auto tn = ros::Time::now().toSec();
 
-  // Find missed grids before pair selection so an idle explorer can pull work released by a relay.
+  // Find missed grids before local repair so an idle explorer can pull work released by a relay.
   vector<int> actives, missed;
   expl_manager_->hgrid_->getActiveGrids(actives);
   findUnallocated(actives, missed);
   const bool have_missed = !missed.empty();
   const bool aggressive_reassign = fd_->aggressive_reassign_requested_ && have_missed;
+
+  if (kPairOptTransactionalRepairOnly) {
+    clearLegacyPairOptState("optTimerCallback:transactional_repair_only");
+    if (have_missed) {
+      logOwnershipEvent("pair_opt_repair", "route_to_assignment_request", 0,
+          component_epoch_, component_leader_id_, getId(), missed,
+          "aggressive_reassign=" + std::string(aggressive_reassign ? "true" : "false") +
+              ", effective_self=" + idsToString(effective_self_grid_ids));
+    }
+    if (have_missed && tryClaimUnallocatedGrids("assignmentTxnRepair", false)) {
+      return;
+    }
+    if (!have_missed) {
+      fd_->aggressive_reassign_requested_ = false;
+    }
+    if (have_missed) {
+      ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: Drone " << getId()
+                                      << " keeps pair-opt in local-repair-only mode; "
+                                      << "ownership changes stay on assignment_plan/commit/ack.");
+    }
+    return;
+  }
 
   // Avoid frequent attempt
   if (!aggressive_reassign && tn - state1.recent_attempt_time_ < fp_->attempt_interval_) return;
@@ -1519,7 +1919,7 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
 
   // Do partition of the grid
   vector<Eigen::Vector3d> positions = { state1.pos_, state2.pos_ };
-  vector<Eigen::Vector3d> velocities = { Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 0, 0) };
+  vector<Eigen::Vector3d> velocities = { state1.vel_, state2.vel_ };
   vector<int> first_ids1, second_ids1, first_ids2, second_ids2;
   if (state_ != WAIT_TRIGGER) {
     expl_manager_->hgrid_->getConsistentGrid(
@@ -1530,9 +1930,18 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
 
   auto t1 = ros::Time::now();
 
+  vector<int> alloc_drone_ids = { getId(), select_id };
+  vector<vector<int>> allocated_grid_ids;
+  expl_manager_->allocateGrids(positions, velocities, alloc_drone_ids, { first_ids1, first_ids2 },
+      { second_ids1, second_ids2 }, opt_ids, allocated_grid_ids);
+
   vector<int> ego_ids, other_ids;
-  expl_manager_->allocateGrids(positions, velocities, { first_ids1, first_ids2 },
-      { second_ids1, second_ids2 }, opt_ids, ego_ids, other_ids);
+  if (!allocated_grid_ids.empty()) ego_ids = allocated_grid_ids[0];
+  if (allocated_grid_ids.size() > 1) other_ids = allocated_grid_ids[1];
+  if (allocated_grid_ids.size() != alloc_drone_ids.size()) {
+    ROS_WARN_STREAM("[PAIR_ALLOC]: expected " << alloc_drone_ids.size()
+                    << " allocation buckets but got " << allocated_grid_ids.size());
+  }
 
   double alloc_time = (ros::Time::now() - t1).toSec();
 
@@ -1548,17 +1957,17 @@ void FastExplorationFSM::optTimerCallback(const ros::TimerEvent& e) {
 
   // Check results. When this pair-opt wakes an idle drone up, reducing the max per-drone
   // remaining workload is more important than keeping the summed path cost strictly smaller.
-  double prev_app1 = expl_manager_->computeGridPathCost(state1.pos_, effective_self_grid_ids, first_ids1,
+  double prev_app1 = expl_manager_->computeGridPathCost(state1.pos_, state1.vel_, effective_self_grid_ids, first_ids1,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
-  double prev_app2 = expl_manager_->computeGridPathCost(state2.pos_, selected_peer_grid_ids, first_ids2,
+  double prev_app2 = expl_manager_->computeGridPathCost(state2.pos_, state2.vel_, selected_peer_grid_ids, first_ids2,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
   const double prev_total_cost = prev_app1 + prev_app2;
   const double prev_max_cost = std::max(prev_app1, prev_app2);
   std::cout << "prev cost: " << prev_app1 << ", " << prev_app2 << ", " << prev_total_cost
             << std::endl;
-  double cur_app1 = expl_manager_->computeGridPathCost(state1.pos_, ego_ids, first_ids1,
+  double cur_app1 = expl_manager_->computeGridPathCost(state1.pos_, state1.vel_, ego_ids, first_ids1,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
-  double cur_app2 = expl_manager_->computeGridPathCost(state2.pos_, other_ids, first_ids2,
+  double cur_app2 = expl_manager_->computeGridPathCost(state2.pos_, state2.vel_, other_ids, first_ids2,
       { first_ids1, first_ids2 }, { second_ids1, second_ids2 }, true);
   const double cur_total_cost = cur_app1 + cur_app2;
   const double cur_max_cost = std::max(cur_app1, cur_app2);
@@ -1646,7 +2055,7 @@ void FastExplorationFSM::findUnallocated(const vector<int>& actives, vector<int>
   }
 
   // Remove allocated ones. Grids currently held by an active relay stay available so other
-  // explorers can pick them up through pair-opt.
+  // explorers can pick them up through assignment transactions triggered by local repair.
   vector<int> effective_self_grid_ids;
   getEffectiveSelfGridIds(effective_self_grid_ids);
   const auto& observed_peer_grid_ids = expl_manager_->ed_->observed_peer_grid_ids_;
@@ -1718,13 +2127,17 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   fd_->static_state_ = true;
   fd_->last_check_frontier_time_ = now;
   fd_->consecutive_plan_failures_ = 0;
+  fd_->plan_failure_relief_rounds_ = 0;
+  fd_->last_assignment_relief_time_ = ros::Time(0);
 
   if (!recoverable_grid_ids.empty()) {
     fd_->aggressive_reassign_requested_ = false;
+    ed->pending_claim_grid_ids_.clear();
+    publishAllocationRequest(std::string("relayRecover:") + reason);
     ROS_WARN_STREAM("[Relay]: Drone " << getId()
                     << " leaving relay mode and staging " << recoverable_grid_ids.size()
                     << " suspended grids; " << handed_off_grid_count
-                    << " already handed off. Ownership is not applied yet.");
+                    << " already handed off. Recovery now goes through assignment transactions.");
 
     if (state_ != INIT && state_ != IDLE) {
       transitState(IDLE, reason);
@@ -1751,7 +2164,8 @@ void FastExplorationFSM::recoverAssignmentAfterRelayExit(const string& reason) {
   }
 }
 
-void FastExplorationFSM::requestAggressiveReassign(const string& reason) {
+void FastExplorationFSM::requestAggressiveReassign(
+    const string& reason, bool immediate_claim) {
   if (!fd_->have_odom_ ||
       current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY) {
     return;
@@ -1759,8 +2173,19 @@ void FastExplorationFSM::requestAggressiveReassign(const string& reason) {
 
   fd_->aggressive_reassign_requested_ = true;
   ROS_INFO_STREAM("[FSM]: Drone " << getId()
-                  << " scheduling aggressive reassignment after " << reason);
-  tryClaimUnallocatedGrids(reason, true);
+                  << " scheduling aggressive reassignment after " << reason
+                  << ", immediate_claim=" << (immediate_claim ? "true" : "false")
+                  << ", consecutive_failures=" << fd_->consecutive_plan_failures_
+                  << ", relief_rounds=" << fd_->plan_failure_relief_rounds_);
+  if (!immediate_claim) {
+    return;
+  }
+
+  const bool claim_started = tryClaimUnallocatedGrids(reason, true);
+  ROS_INFO_STREAM("[FSM]: Drone " << getId()
+                  << " aggressive reassignment immediate claim_started="
+                  << (claim_started ? "true" : "false")
+                  << ", reason=" << reason);
 }
 
 bool FastExplorationFSM::tryClaimUnallocatedGrids(
@@ -1886,9 +2311,13 @@ bool FastExplorationFSM::tryClaimUnallocatedGrids(
   ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged claim candidate of "
                   << ed->pending_claim_grid_ids_.size() << " missed grids after " << pos_call
                   << ", active grids=" << actives.size() << ", missed grids=" << missed.size()
+                  << ", require_empty_assignment=" << require_empty_assignment
                   << ". Ownership is not applied yet.");
 
-  publishAllocationRequest(std::string("pendingClaim:") + pos_call);
+  if (!publishAllocationRequest(std::string("pendingClaim:") + pos_call)) {
+    ROS_WARN_STREAM("[FSM]: Drone " << getId()
+                    << " staged claim candidate but could not publish allocation request yet.");
+  }
 
   return true;
 }
@@ -1902,39 +2331,48 @@ void FastExplorationFSM::optMsgCallback(const exploration_manager::PairOptConstP
 
   auto& state1 = expl_manager_->ed_->swarm_state_[msg->from_drone_id - 1];
   auto& state2 = expl_manager_->ed_->swarm_state_[getId() - 1];
+  const vector<int> requested_self_grid_ids(msg->other_ids.begin(), msg->other_ids.end());
+  const vector<int> requested_peer_grid_ids(msg->ego_ids.begin(), msg->ego_ids.end());
 
-  // auto tn = ros::Time::now().toSec();
   exploration_manager::PairOptResponse response;
   response.from_drone_id = msg->to_drone_id;
   response.to_drone_id = msg->from_drone_id;
-  response.stamp = msg->stamp;  // reply with the same stamp for verificaiton
+  response.stamp = msg->stamp;  // reply with the same stamp for verification
 
-  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY || !state2.task_assignable_) {
+  string reject_reason;
+  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY ||
+      state2.task_assignable_ == false) {
     ROS_WARN("Reject pair opt while acting as relay");
     response.status = 3;
-  } else if (!state1.task_assignable_) {
+    reject_reason = "receiver_not_assignable";
+  } else if (state1.task_assignable_ == false) {
     ROS_WARN("Reject pair opt from non-assignable peer");
     response.status = 4;
+    reject_reason = "sender_not_assignable";
   } else if (msg->stamp - state2.recent_attempt_time_ < fp_->attempt_interval_) {
-    // Just made another pair opt attempt, should reject this attempt to avoid frequent changes
     ROS_WARN("Reject frequent attempt");
     response.status = 2;
+    reject_reason = "receiver_recent_attempt";
   } else {
-    // Stopgap safety mode: keep the candidate for a future protocol, but do not mutate owner state.
-    response.status = 5;
-
-    auto ed = expl_manager_->ed_;
-    ed->pending_pair_opt_peer_grid_ids_.assign(msg->ego_ids.begin(), msg->ego_ids.end());
-    ed->pending_pair_opt_grid_ids_.assign(msg->other_ids.begin(), msg->other_ids.end());
+    response.status = kPairOptTransactionalRepairOnlyStatus;
+    reject_reason = "transactional_repair_only";
     state2.recent_attempt_time_ = ros::Time::now().toSec();
-
-    ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged pair-opt candidate from drone "
-                    << msg->from_drone_id << " (peer="
-                    << ed->pending_pair_opt_peer_grid_ids_.size() << ", self="
-                    << ed->pending_pair_opt_grid_ids_.size()
-                    << ") without applying ownership.");
+    ROS_WARN_STREAM("[FSM]: Drone " << getId() << " rejected direct pair-opt transfer from drone "
+                    << msg->from_drone_id
+                    << " because ownership changes now flow only through assignment transactions.");
   }
-  for (int i = 0; i < fp_->repeat_send_num_; ++i) opt_res_pub_.publish(response);
+
+  clearLegacyPairOptState("optMsgCallback:" + reject_reason);
+  logOwnershipEvent("pair_opt", "direct_transfer_rejected", 0, component_epoch_,
+      component_leader_id_, msg->from_drone_id, requested_self_grid_ids,
+      "status=" + std::to_string(response.status) + ", reason=" + reject_reason +
+          ", sender_id=" + std::to_string(msg->from_drone_id) +
+          ", self_candidate=" + idsToString(requested_self_grid_ids) +
+          ", peer_candidate=" + idsToString(requested_peer_grid_ids));
+
+  for (int i = 0; i < fp_->repeat_send_num_; ++i) {
+    opt_res_pub_.publish(response);
+  }
 }
 
 void FastExplorationFSM::optResMsgCallback(
@@ -1946,26 +2384,21 @@ void FastExplorationFSM::optResMsgCallback(
   expl_manager_->ed_->pair_opt_res_stamps_[msg->from_drone_id - 1] = msg->stamp;
 
   auto ed = expl_manager_->ed_;
-  // Verify the consistency of pair opt via time stamp
-  if (!ed->wait_response_ || fabs(ed->pair_opt_stamp_ - msg->stamp) > 1e-5) return;
+  const bool waiting_response = ed->wait_response_;
+  const double reserved_stamp = ed->pair_opt_stamp_;
+  const bool stamp_matches = waiting_response && std::fabs(reserved_stamp - msg->stamp) <= 1e-5;
 
-  ed->wait_response_ = false;
-  ROS_WARN("get response %d", int(msg->status));
-
-  auto& state1 = ed->swarm_state_[getId() - 1];
-  if (current_role_ == relay_racer_integration::RelayRoleCmd::ROLE_RELAY || !state1.task_assignable_) {
-    return;
-  }
-  if (msg->status != 1) return;  // Receive 1 for valid opt
-
-  auto& state2 = ed->swarm_state_[msg->from_drone_id - 1];
-  ed->pending_commit_grid_ids_ = ed->ego_ids_;
-  ed->pending_commit_peer_grid_ids_ = ed->other_ids_;
-  state2.recent_interact_time_ = ros::Time::now().toSec();
-  ROS_WARN_STREAM("[FSM]: Drone " << getId() << " staged pair-opt commit candidate (self="
-                  << ed->pending_commit_grid_ids_.size() << ", peer="
-                  << ed->pending_commit_peer_grid_ids_.size()
-                  << ") after response without applying ownership.");
+  logOwnershipEvent("pair_opt", "response_ignored", 0, component_epoch_, component_leader_id_,
+      msg->from_drone_id, ed->ego_ids_,
+      "status=" + std::to_string(int(msg->status)) +
+          ", waiting_response=" + std::string(waiting_response ? "true" : "false") +
+          ", stamp_matches=" + std::string(stamp_matches ? "true" : "false") +
+          ", reserved_stamp=" + std::to_string(reserved_stamp) +
+          ", response_stamp=" + std::to_string(msg->stamp) +
+          ", reserved_self=" + idsToString(ed->ego_ids_) +
+          ", reserved_peer=" + idsToString(ed->other_ids_) +
+          ", ownership_path=assignment_transactions_only");
+  clearLegacyPairOptState("optResMsgCallback:status=" + std::to_string(int(msg->status)));
 }
 
 void FastExplorationFSM::swarmTrajCallback(const bspline::BsplineConstPtr& msg) {

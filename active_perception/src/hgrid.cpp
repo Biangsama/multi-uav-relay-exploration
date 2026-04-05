@@ -5,6 +5,9 @@
 #include <plan_env/sdf_map.h>
 #include <plan_env/edt_environment.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace fast_planner {
 
 HGrid::HGrid(const shared_ptr<EDTEnvironment>& edt, ros::NodeHandle& nh) {
@@ -14,6 +17,8 @@ HGrid::HGrid(const shared_ptr<EDTEnvironment>& edt, ros::NodeHandle& nh) {
   nh.param("partitioning/consistent_cost2", consistent_cost2_, 3.5);
   nh.param("partitioning/use_swarm_tf", use_swarm_tf_, false);
   nh.param("partitioning/w_first", w_first_, 1.0);
+  nh.param("partitioning/velocity_cost_weight", velocity_cost_weight_, 0.35);
+  nh.param("partitioning/velocity_cost_cap", velocity_cost_cap_, 2.0);
 
   path_finder_.reset(new Astar);
   path_finder_->init(nh, edt);
@@ -279,6 +284,12 @@ void HGrid::getCostMatrix(const vector<Eigen::Vector3d>& positions,
     const vector<vector<int>>& second_ids, const vector<int>& grid_ids, Eigen::MatrixXd& mat) {
   // first_ids and second_ids are drone_num x 1-4 vectors
 
+  constexpr double kDepotStartBias = -1000.0;
+  constexpr double kDepotEndBias = 1000.0;
+  constexpr double kGridToDepotCost = 0.0;
+  constexpr double kDroneTransitionPenalty = 10000.0;
+  constexpr double kSelfTransitionPenalty = 1000.0;
+
   // Fill the cost matrix
   const int drone_num = positions.size();
   const int grid_num = grid_ids.size();
@@ -299,25 +310,27 @@ void HGrid::getCostMatrix(const vector<Eigen::Vector3d>& positions,
 
   // Virtual depot to drones
   for (int i = 0; i < drone_num; ++i) {
-    mat(0, 1 + i) = -1000;
-    mat(1 + i, 0) = 1000;
+    mat(0, 1 + i) = kDepotStartBias;
+    mat(1 + i, 0) = kDepotEndBias;
   }
   // Virtual depot to grid
   for (int i = 0; i < grid_num; ++i) {
-    mat(0, 1 + drone_num + i) = 1000;
-    mat(1 + drone_num + i, 0) = 0;
+    mat(0, 1 + drone_num + i) = kDepotEndBias;
+    mat(1 + drone_num + i, 0) = kGridToDepotCost;
   }
   // Costs between drones
   for (int i = 0; i < drone_num; ++i) {
     for (int j = 0; j < drone_num; ++j) {
-      mat(1 + i, 1 + j) = 10000;
+      mat(1 + i, 1 + j) = kDroneTransitionPenalty;
     }
   }
 
   // Costs from drones to grid
   for (int i = 0; i < drone_num; ++i) {
     for (int j = 0; j < grid_num; ++j) {
-      double cost = getCostDroneToGrid(positions[i], grid_ids[j], first_ids[i]);
+      const Eigen::Vector3d vel =
+          i < static_cast<int>(velocities.size()) ? velocities[i] : Eigen::Vector3d::Zero();
+      double cost = getCostDroneToGrid(positions[i], vel, grid_ids[j], first_ids[i]);
       mat(1 + i, 1 + drone_num + j) = cost;
       mat(1 + drone_num + j, 1 + i) = 0;
     }
@@ -333,7 +346,7 @@ void HGrid::getCostMatrix(const vector<Eigen::Vector3d>& positions,
 
   // Diag
   for (int i = 0; i < dimen; ++i) {
-    mat(i, i) = 1000;
+    mat(i, i) = kSelfTransitionPenalty;
   }
 }
 
@@ -364,6 +377,26 @@ double HGrid::getCostDroneToGrid(
   }
   // if (drone_num > 1) cost *= w_first_;
   return cost;
+}
+
+double HGrid::getCostDroneToGrid(const Eigen::Vector3d& pos, const Eigen::Vector3d& vel,
+    const int& grid_id, const vector<int>& first) {
+  double cost = getCostDroneToGrid(pos, grid_id, first);
+  if (velocity_cost_weight_ <= 1e-6 || velocity_cost_cap_ <= 1e-6) {
+    return cost;
+  }
+
+  const auto& grid = getGrid(grid_id);
+  const Eigen::Vector3d delta = grid.center_ - pos;
+  const double delta_norm = delta.norm();
+  if (delta_norm <= 1e-3) {
+    return cost;
+  }
+
+  const double closing_speed = vel.dot(delta / delta_norm);
+  const double bounded_bias = std::max(-velocity_cost_cap_,
+      std::min(velocity_cost_cap_, -velocity_cost_weight_ * closing_speed));
+  return std::max(0.0, cost + bounded_bias);
 }
 
 double HGrid::getCostGridToGrid(const int& id1, const int& id2, const vector<vector<int>>& firsts,

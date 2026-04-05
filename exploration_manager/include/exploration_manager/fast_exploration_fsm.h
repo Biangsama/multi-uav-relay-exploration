@@ -66,12 +66,22 @@ private:
   bool handleRemoteMapUpdate(const ros::Time& now);
   void findUnallocated(const vector<int>& actives, vector<int>& missed);
   void recoverAssignmentAfterRelayExit(const string& reason);
-  void requestAggressiveReassign(const string& reason);
+  void requestAggressiveReassign(const string& reason, bool immediate_claim = true);
   bool tryClaimUnallocatedGrids(const string& pos_call, bool require_empty_assignment);
   bool tryStartExploration(const string& pos_call, bool finish_if_no_frontier);
   void getEffectiveSelfGridIds(vector<int>& grid_ids) const;
   void stagePendingSelfRelease(const vector<int>& grid_ids);
+  bool getPendingAllocationCandidates(vector<int>& grid_ids) const;
+  void selectPlanFailureReleaseGrids(
+      const vector<int>& effective_self_grid_ids, bool aggressive, vector<int>& release_grid_ids);
   void clearPendingAssignmentTxn();
+  void clearLegacyPairOptState(const string& reason);
+  void logOwnershipEvent(const string& chain, const string& event, uint64_t txn_id,
+      uint64_t component_epoch, int leader_id, int requester_id, const vector<int>& grid_ids,
+      const string& detail = string()) const;
+  void logPlanFailureRecovery(const string& stage, int failure_count,
+      const vector<int>& effective_self_grid_ids, const vector<int>& release_grid_ids,
+      bool trigger_aggressive_reassign, const string& reason) const;
   bool publishAllocationRequest(const string& reason);
   bool publishReleaseRequest(const vector<int>& grid_ids, const string& reason);
 
@@ -127,6 +137,7 @@ private:
   vector<int> last_component_member_ids_;
   std::unordered_map<int, int> component_owner_ids_;
   std::unordered_map<int, uint64_t> component_owner_versions_;
+  // Transaction-local staged assignment: plan received and acked, but ownership not committed yet.
   bool pending_assignment_active_;
   uint64_t pending_assignment_txn_id_;
   uint64_t pending_assignment_component_epoch_;

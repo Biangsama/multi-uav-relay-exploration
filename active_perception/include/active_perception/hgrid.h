@@ -60,6 +60,8 @@ public:
   bool isConsistent(const int& id1, const int& id2);
   double getCostDroneToGrid(
       const Eigen::Vector3d& pos, const int& grid_id, const vector<int>& first);
+  double getCostDroneToGrid(const Eigen::Vector3d& pos, const Eigen::Vector3d& vel,
+      const int& grid_id, const vector<int>& first);
   double getCostGridToGrid(const int& id1, const int& id2, const vector<vector<int>>& firsts,
       const vector<vector<int>>& seconds, const int& drone_num);
   unique_ptr<Astar> path_finder_;
@@ -78,6 +80,8 @@ private:
   shared_ptr<EDTEnvironment> edt_;
   double consistent_cost_;
   double consistent_cost2_;
+  double velocity_cost_weight_;
+  double velocity_cost_cap_;
 
   // Swarm tf
   Eigen::Matrix3d rot_sw_;

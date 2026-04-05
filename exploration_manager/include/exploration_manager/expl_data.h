@@ -31,8 +31,10 @@ struct FSMData {
   ros::Time last_safety_replan_time_;
   ros::Time last_plan_fail_time_;
   ros::Time last_plan_success_time_;
+  ros::Time last_assignment_relief_time_;
   bool aggressive_reassign_requested_;
   int consecutive_plan_failures_;
+  int plan_failure_relief_rounds_;
 
   Eigen::Vector3d start_pos_;
 };
@@ -101,12 +103,17 @@ struct ExplorationData {
   vector<int> ego_ids_, other_ids_;
   vector<vector<int>> observed_peer_grid_ids_;
   vector<int> pending_grid_ids_;
+  // Candidate free grids requested through allocation_request; no ownership yet.
   vector<int> pending_claim_grid_ids_;
+  // Preferred subset of relay-released grids to reclaim through allocation_request.
   vector<int> pending_relay_recover_grid_ids_;
+  // Legacy pair-opt diagnostics only; direct ownership transfer is disabled.
   vector<int> pending_pair_opt_grid_ids_, pending_pair_opt_peer_grid_ids_;
+  // Locally staged release set; these grids are hidden from self planning before commit converges.
   vector<int> pending_release_grid_ids_;
   vector<int> pending_invalidated_grid_ids_;
   vector<int> pending_plan_fail_release_grid_ids_;
+  // Legacy pair-opt commit diagnostics; ownership still must flow through assignment commit.
   vector<int> pending_commit_grid_ids_, pending_commit_peer_grid_ids_;
   vector<int> pending_relay_enter_release_grid_ids_;
   double pair_opt_stamp_;
